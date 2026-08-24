@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import statistics
 import sys
 import textwrap
 from datetime import datetime, timezone
@@ -403,6 +404,155 @@ def cmd_board(a, conn) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- stats ----
+# M4. "Publish the numbers even when they are bad. A pillar nobody uses is a
+# finding." The exit is a dated scorecard with NO BLANK MEASURES, which is the
+# whole difficulty: the easy way to avoid an embarrassing number is to leave the
+# measure out, and that is the one thing this milestone forbids.
+#
+# Three rules hold the scorecard honest, and each has a test:
+#   - every measure prints a number, including zero;
+#   - every rate prints its denominator, because a percentage over n=2 is a lie
+#     with a decimal point;
+#   - nothing is extrapolated. A per-week rate over a 54-minute ledger is
+#     invention, so the window is stated and the rate is refused by name.
+
+
+def _fmt_duration(secs: int) -> str:
+    if secs < 3600:
+        return f"{secs // 60}m"
+    if secs < 86400:
+        return f"{secs // 3600}h"
+    return f"{secs // 86400}d"
+
+
+def _pct(part: int, whole: int) -> str:
+    """A share always carries its denominator. Never a bare percentage."""
+    if whole == 0:
+        return f"{part} of 0"
+    return f"{part} of {whole} ({round(100 * part / whole)}%)"
+
+
+def _scorecard(conn) -> dict:
+    gates = core.list_gates(conn, state="all")
+    total = len(gates)
+    rows = conn.execute(
+        "SELECT MIN(raised_at) lo, MAX(raised_at) hi FROM gates").fetchone()
+    window = 0
+    if rows["lo"]:
+        window = int(
+            (datetime.strptime(rows["hi"], "%Y-%m-%dT%H:%M:%SZ")
+             - datetime.strptime(rows["lo"], "%Y-%m-%dT%H:%M:%SZ")).total_seconds())
+
+    by_seat = {r["raised_by"]: r["n"] for r in conn.execute(
+        "SELECT raised_by, COUNT(*) n FROM gates GROUP BY raised_by ORDER BY n DESC")}
+    by_state = {r["state"]: r["n"] for r in conn.execute(
+        "SELECT state, COUNT(*) n FROM rulings GROUP BY state")}
+    closed = sum(by_state.values())
+
+    to_ruling = []
+    for g in gates:
+        r = g["ruling"]
+        if r and r["state"] in core.RULED_STATES:
+            to_ruling.append(int(
+                (datetime.strptime(r["ruled_at"], "%Y-%m-%dT%H:%M:%SZ")
+                 - datetime.strptime(g["raised_at"], "%Y-%m-%dT%H:%M:%SZ")).total_seconds()))
+
+    # "The share of gates whose consumer actually acted" is the measure this
+    # milestone cannot take directly: nothing records that a consumer acted. The
+    # only observable proxy is a delivery check, so the number is split into what
+    # is measurable and what is not, and UNKNOWN IS NEVER COUNTED AS ACTED.
+    measurable = [g for g in gates if g["delivery_check"]]
+    confirmed = sum(
+        1 for g in measurable
+        if (o := core.latest_observation(conn, g["id"], "delivery")) and o["exit_code"] == 0)
+
+    fields = {
+        "decay check": sum(1 for g in gates if g["decay_check"]),
+        "delivery check": len(measurable),
+        "binding": sum(1 for g in gates if g["binding_sha256"]),
+        "options": sum(1 for g in gates if g["options"]),
+        "horizon": sum(1 for g in gates if g["horizon"]),
+    }
+    checked = conn.execute(
+        "SELECT COUNT(*) obs, COUNT(DISTINCT gate_id) g FROM observations").fetchone()
+
+    return {
+        "generated_at": core.now(),
+        "window_seconds": window,
+        "window_from": rows["lo"], "window_to": rows["hi"],
+        "raised": total, "raised_by_seat": by_seat,
+        "closed": closed, "open": total - closed, "closed_by_state": by_state,
+        "ruled": sum(by_state.get(k, 0) for k in core.RULED_STATES),
+        "time_to_ruling_seconds": sorted(to_ruling),
+        "consumer_acted": {"measurable": len(measurable), "confirmed": confirmed,
+                           "unknown": total - len(measurable)},
+        "fields": fields,
+        "observations": checked["obs"], "gates_ever_checked": checked["g"],
+    }
+
+
+def cmd_stats(a, conn) -> int:
+    d = _scorecard(conn)
+    if a.json:
+        print(json.dumps(d, indent=2, default=str))
+        return 0
+
+    print(f"JANUS SCORECARD — {d['generated_at']}")
+    if d["raised"] == 0:
+        print("\nraised      0 gates. The ledger is empty, so every measure below "
+              "would be 0 of 0.")
+        print("            That is the honest scorecard, not a missing one.")
+        return 0
+
+    print(f"window      {d['window_from']} → {d['window_to']}"
+          f"  ({_fmt_duration(d['window_seconds'])} of ledger)")
+    print(f"\nRAISED      {d['raised']}")
+    for seat, n in d["raised_by_seat"].items():
+        print(f"  {seat:<24}{_pct(n, d['raised'])}")
+    # No extrapolation. Refused BY NAME so the absence reads as a decision.
+    if d["window_seconds"] < 7 * 86400:
+        print("  per week                not reported — the ledger is "
+              f"{_fmt_duration(d['window_seconds'])} old, shorter than the week "
+              "this measure is defined over")
+
+    print(f"\nCLOSED      {_pct(d['closed'], d['raised'])}   ·   open {d['open']}")
+    for state in core.TERMINAL_STATES:
+        n = d["closed_by_state"].get(state, 0)
+        tail = "  ← a human actually ruled" if state in core.RULED_STATES and n else ""
+        print(f"  {state:<24}{_pct(n, d['closed'])}{tail}")
+
+    t = d["time_to_ruling_seconds"]
+    if t:
+        print(f"\nTIME TO RULING            n={len(t)} · median "
+              f"{_fmt_duration(int(statistics.median(t)))} · fastest "
+              f"{_fmt_duration(t[0])} · slowest {_fmt_duration(t[-1])}")
+    else:
+        print("\nTIME TO RULING            n=0 — no gate has been ruled on yet")
+    print("  Rulings only. A superseded or expired gate was never ruled and is not "
+          "a fast ruling.")
+
+    c = d["consumer_acted"]
+    print(f"\nCONSUMER ACTED            measurable {_pct(c['measurable'], d['raised'])}"
+          f" · confirmed {c['confirmed']} · unknown {c['unknown']}")
+    print("  A gate states what its consumer will do; only a delivery check reports "
+          "whether it happened.")
+    print("  Unknown is never counted as acted.")
+
+    print("\nFIELDS THE BOARD DEPENDS ON")
+    for name, n in d["fields"].items():
+        note = ""
+        if name == "decay check" and n < d["raised"]:
+            note = f"  ← the board reads 'unmeasured' for the other {d['raised'] - n}"
+        if name == "horizon" and n == 0:
+            note = "  ← the overdue marker has never fired"
+        print(f"  {name:<24}{_pct(n, d['raised'])}{note}")
+
+    print(f"\nCHECKS RUN                {d['observations']} observation(s) across "
+          f"{_pct(d['gates_ever_checked'], d['raised'])} gates")
+    return 0
+
+
 def cmd_doctor(a, conn) -> int:
     problems = 0
     print(f"db          {core.DEFAULT_DB if not a.db else a.db}")
@@ -526,6 +676,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="run every decay check first (on demand; observations only)")
     b.add_argument("--all", action="store_true", help="show every gate, past the one-screen fold")
     b.set_defaults(fn=cmd_board)
+
+    st = sub.add_parser("stats", help="the dated scorecard: is anyone actually using this")
+    st.add_argument("--json", action="store_true")
+    st.set_defaults(fn=cmd_stats)
 
     doc = sub.add_parser("doctor", help="ledger health, append-only proof, drift")
     doc.set_defaults(fn=cmd_doctor)

@@ -12,6 +12,7 @@ paid for elsewhere in the fleet.
 
 from __future__ import annotations
 
+import json
 import shutil
 import sqlite3
 import subprocess
@@ -642,3 +643,95 @@ def test_approving_a_gate_still_says_a_human_ruled(tmp_path):
     )
     assert r.returncode == 0, r.stderr
     assert "This records that a human ruled" in r.stdout, r.stdout
+
+
+# ------------------------------------------------------ M4: the scorecard ---
+def _stats(db: Path, *argv):
+    r = subprocess.run(
+        [sys.executable, "-m", "janus.cli", "--db", str(db), "stats", *argv],
+        capture_output=True, text=True,
+        env={"PATH": "/usr/bin:/bin",
+             "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
+             "HOME": str(db.parent), "USER": "tester"},
+    )
+    assert r.returncode == 0, r.stderr
+    return r.stdout
+
+
+def _populated(tmp_path):
+    conn = core.connect(tmp_path / "s.db")
+    ruled = _gate(conn, question="ruled one")
+    gone = _gate(conn, question="superseded one")
+    _gate(conn, question="still open")
+    core.close_gate(conn, ruled, state="approved", reason="yes", actor="kevin")
+    core.close_gate(conn, gone, state="superseded", reason="moved on", actor="tester")
+    return tmp_path / "s.db", conn
+
+
+def test_a_supersede_is_never_counted_as_a_ruling(tmp_path):
+    """The same distinction the closing sentence got wrong, now in a metric.
+
+    A scorecard that counts "the world moved past it" as a decision reports a
+    fleet that rules on everything. Half of this ledger's closures were
+    supersedes; that is the finding, and averaging it away destroys it.
+    """
+    db, _ = _populated(tmp_path)
+    d = json.loads(_stats(db, "--json"))
+    assert d["closed"] == 2
+    assert d["ruled"] == 1, d["closed_by_state"]
+    assert d["closed_by_state"]["superseded"] == 1
+    assert len(d["time_to_ruling_seconds"]) == 1, "a supersede leaked into time-to-ruling"
+
+
+def test_the_scorecard_has_no_blank_measures(tmp_path):
+    """M4's exit is 'a dated scorecard with no blank measures'.
+
+    The easy way to avoid an embarrassing number is to omit the measure, which
+    is the one thing this milestone forbids.
+    """
+    db, _ = _populated(tmp_path)
+    out = _stats(db)
+    for measure in ("RAISED", "CLOSED", "TIME TO RULING", "CONSUMER ACTED",
+                    "decay check", "horizon", "CHECKS RUN"):
+        line = next(ln for ln in out.splitlines() if measure in ln)
+        assert any(ch.isdigit() for ch in line), f"{measure} printed no number: {line}"
+    for blank in ("n/a", "None", "TBD", "unknown)"):
+        assert blank not in out, blank
+
+
+def test_every_rate_carries_its_denominator(tmp_path):
+    """A percentage over n=2 is a lie with a decimal point."""
+    db, _ = _populated(tmp_path)
+    for line in _stats(db).splitlines():
+        if "%" in line:
+            assert " of " in line, f"bare percentage: {line}"
+
+
+def test_the_scorecard_refuses_to_extrapolate_a_rate_it_cannot_measure(tmp_path):
+    """A per-week figure over a minutes-old ledger is invention.
+
+    Refused BY NAME rather than omitted, so the absence reads as a decision
+    someone made instead of a measure someone forgot.
+    """
+    db, _ = _populated(tmp_path)
+    out = _stats(db)
+    line = next(ln for ln in out.splitlines() if "per week" in ln)
+    assert "not reported" in line and "shorter than the week" in line
+
+
+def test_a_gate_with_no_delivery_check_is_unknown_never_acted(tmp_path):
+    db = tmp_path / "s.db"
+    conn = core.connect(db)
+    _gate(conn, kind="resource")                       # no signal at all
+    landed = _gate(conn, kind="resource", delivery_check="true")
+    core.close_gate(conn, landed, state="approved", reason="yes", actor="kevin")
+    core.observe(conn, landed, "delivery", "tester")
+
+    d = json.loads(_stats(db, "--json"))["consumer_acted"]
+    assert d == {"measurable": 1, "confirmed": 1, "unknown": 1}, d
+
+
+def test_the_scorecard_on_an_empty_ledger_invents_nothing(tmp_path):
+    out = _stats(tmp_path / "empty.db")
+    assert "0 gates" in out
+    assert "%" not in out, "a percentage was computed over an empty ledger"

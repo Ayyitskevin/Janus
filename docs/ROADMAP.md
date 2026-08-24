@@ -65,10 +65,11 @@ write.
 - ~~Expiry as an explicit operator action~~ — `janus expire` (M1). Automatic
   expiry still deliberately absent; `horizon` has not yet proven meaningful.
 
-**Exit — NOT MET.** The exit is *the operator uses the board instead of grepping
-handoffs, measured by asking rather than assumed*, and nobody has been asked.
-The code landing is not the milestone closing. This stays open until there is an
-answer, and "he has not said no" is not an answer.
+**Exit — NOT MET, and now measured rather than pending.** Asked 2026-08-24;
+the operator's answer was *"not yet — haven't used it"*. Recorded as the result,
+not as a failure to chase: a board that was built and is not used is the same
+class of finding as a pillar nobody adopts, and it is worth more written down
+than argued away. M2 stays open until the answer changes. Re-ask, do not assume.
 
 ## M3 — read-only surfaces
 
@@ -79,14 +80,39 @@ answer, and "he has not said no" is not an answer.
 
 **Exit:** one sibling reads the export without Janus knowing or caring.
 
-## M4 — measured adoption
+## M4 — measured adoption — **SHIPPED 2026-08-24**
 
-- Instrument from the first day of M1: gates raised per week by seat, time from
-  raise to ruling, expiry rate, and the share of gates whose consumer actually
-  acted.
-- Publish the numbers even when they are bad. A pillar nobody uses is a finding.
+`janus stats` (add `--json`) prints the dated scorecard. Every measure this
+milestone named is there, and three rules keep it honest, each with a test:
+every measure prints a number including zero; every rate prints its denominator,
+because a percentage over n=2 is a lie with a decimal point; and nothing is
+extrapolated — a per-week rate over a 54-minute ledger is invention, so the
+window is stated and the rate is **refused by name** rather than omitted, so the
+absence reads as a decision instead of an oversight.
 
-**Exit:** a dated scorecard with no blank measures.
+Two measures needed a judgment call rather than a query:
+
+- **"The share of gates whose consumer actually acted"** cannot be taken
+  directly — nothing records that a consumer acted. The only observable proxy is
+  a delivery check, so the number is split into measurable, confirmed, and
+  unknown, and *unknown is never counted as acted*.
+- **A supersede is not a ruling.** Counting "the world moved past it" as a
+  decision would report a fleet that rules on everything. Half of the first
+  ledger's closures were supersedes; that is the finding, and averaging it away
+  destroys it.
+
+Taken late, and worth recording as such: this says "instrument from the first
+day of M1", and instrumentation actually began at M4. The first scorecard
+therefore describes a ledger already 8 gates old rather than one measured from
+its first.
+
+**Exit — MET.** First scorecard published 2026-08-24, and the numbers are bad in
+the way the milestone anticipated: **8 gates, all 8 raised by a single seat**, in
+a ledger 54 minutes wide. 1 of 8 carries a decay check, so the board reads
+`unmeasured` for the other 7; 0 of 8 set a horizon, so the overdue marker has
+never fired. 6 of 8 carry options, which is the one M0 corpus claim the live
+data supports. A pillar nobody but its author uses is a finding, and it is now
+a printed one.
 
 ## Later, explicitly not next
 

@@ -17,6 +17,7 @@ janus --seat <seat> raise "<one sentence a tired human can answer>" \
 
 janus board                # the one screen: what is waiting, how long, what worsens
 janus show <id>            # detail, and whether the binding still holds
+janus stats                # the dated scorecard: is anyone actually using this
 janus decide <id> --approve --reason "..." [--option <id>]
 ```
 
