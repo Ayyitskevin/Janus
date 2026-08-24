@@ -72,6 +72,23 @@ Naming these does not open them.
 - No cross-module writes in the first milestone. Other systems learn about a
   gate by reading, or by a human telling them.
 - No multi-user authorization, remote bind, or cloud hosting.
+
+## Licensing
+
+Apache-2.0, chosen to match this vision rather than to match a sibling. Athena
+and Vulcan are AGPL because they are host-able operator services with real
+appropriation risk. Janus is not one and never becomes one — loopback, single
+user, no remote bind are all stated non-goals above — so the network clause
+that makes the AGPL worth its friction would have nothing to act on here.
+
+What Janus does have in common with Minerva, which is also Apache-2.0, is that
+some of its value is an interchange contract: the M3 export is meant to be read
+and verified by systems that are not Janus. A contract others should implement
+is worth licensing permissively, and the explicit patent grant makes adopting
+the mechanism safer than a bare MIT would.
+
+Revisit this if Janus ever acquires a hosted form or commercial stakes. This is
+a considered default, not legal advice.
 - No dashboard for its own sake. A board view must answer the operator's
   question in one screen or it is not built.
 
