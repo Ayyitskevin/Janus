@@ -2,6 +2,7 @@
 
 - Status: Proposed
 - Date: 2026-08-23
+- Amended: 2026-08-24 (open questions resolved against a real corpus)
 
 ## Context
 
@@ -45,7 +46,8 @@ A gate is one decision that only a human can make. It carries:
 - `decay` — what worsens while it waits, with an optional re-runnable check
 - `consumer` — who acts on the answer, and what they do with each outcome
 - `horizon` — when the gate expires if unanswered
-- `state` — `open`, `approved`, `refused`, `expired`, `withdrawn`
+- `options` — optional ordered alternatives; empty means approve/refuse
+- `state` — `open`, `approved`, `refused`, `expired`, `withdrawn`, `superseded`
 
 `question`, `kind`, `decay`, and `consumer` are required. A gate without a
 consumer is a note; a gate without decay has no claim on attention; a gate whose
@@ -55,9 +57,13 @@ schema refuses all three rather than accepting a degraded record.
 ### The ruling
 
 A ruling is `approved` or `refused`, carries a reason and the digest it was
-bound to at the moment of ruling, and is terminal. `expired` and `withdrawn` are
-terminal outcomes that are not rulings: the first is time, the second is the
-raiser retracting the question.
+bound to at the moment of ruling, and is terminal. When the gate carries
+`options`, an `approved` ruling must also name exactly one option id.
+
+Three terminal outcomes are not rulings, because nobody ruled: `expired` (time
+ran out), `withdrawn` (the raiser retracted the question), and `superseded`
+(the world moved past it — see the resolved open questions below, where the
+corpus shows this is the most common outcome of all).
 
 The record is append-only. A reversal is a **new gate** that cites the prior
 gate, never an edit. This mirrors the correction discipline already used
@@ -106,13 +112,74 @@ loss rather than effort; decay makes that rule temporal and checkable.
 - *Cross-module write seams in milestone 1.* Every sibling in this fleet that
   built a seam before it had a proven consumer closed it again.
 
-## Open questions
+## Open questions — resolved 2026-08-24
 
-- Does `kind` come from a fixed enum of irreversibility categories, or is it
-  free text with a recommended vocabulary? A fixed enum is more analyzable and
-  more likely to be wrong at the edges.
-- Should a gate support a bounded set of options beyond approve/refuse — the
-  "pick one of these three" decision, which is common and currently gets
-  flattened into prose?
-- Is `horizon` mandatory? A gate with no expiry never leaves the queue, but
-  forcing every raiser to invent a date invites meaningless ones.
+Settled against twelve real gates from one session rather than by taste. The
+corpus is `docs/evidence/2026-08-24-gate-corpus.md`; two of the three answers
+came out differently than the leaning recorded when this ADR was written.
+
+### `kind` is a fixed enum, but NOT the irreversibility list
+
+The obvious enum was the fleet's RED categories. Measured against the corpus it
+covers **3 of 12**. The rest are perfectly reversible design and policy calls
+that need a human because the human owns the taste, the authority, or the
+resource. `kind` therefore answers *why this needs a person*, not *how
+dangerous it is*:
+
+- `irreversible` — cannot be undone once done
+- `authority` — only the owner may rule: doctrine, legal, process
+- `taste` — a design choice with no dominant answer
+- `resource` — only the human can supply it: a credential, money, hardware
+
+Four values covered all twelve with nothing left over and nothing forced. No
+`other`: an escape hatch would absorb exactly the gates worth noticing. A gate
+that fits none of these is evidence the enum is wrong, and that is a finding to
+raise, not a value to add casually.
+
+### Multi-option gates: YES, and they are the majority
+
+Six of twelve gates present two or three named alternatives with costed
+trade-offs, including both of the highest-stakes ones. Approve/refuse alone
+would flatten half the corpus into prose.
+
+A gate carries an optional ordered `options` list. Empty means approve/refuse.
+Non-empty means the ruling selects exactly one option id, and a ruling that
+names no option — or an unknown one — is refused at write time. The raiser
+states the recommended option; a queue that offers choices without a
+recommendation just moves the work.
+
+### `horizon` is OPTIONAL
+
+Six of twelve carry a real deadline, and every one of those is a gate blocking
+work already in flight. The other six have no honest date. Making it mandatory
+would manufacture six invented dates to get six real ones, and invented dates
+are what teach an operator to ignore the field.
+
+### Two things the corpus surfaced that this ADR had not considered
+
+**A terminal `superseded` outcome is required.** Gate #1 — a review requested
+at 18:17, its PR merged at 22:10 without it — was neither decided, refused, nor
+expired. Nothing timed out, nobody retracted, nobody ruled: the world moved past
+the question. This is the most common decay mode observed, and a state machine
+lacking it accumulates open gates whose subjects already shipped. A board that
+lies once stops being read. `superseded` records what overtook the gate, and is
+set by whoever observes it, not only by the raiser.
+
+The full terminal set is therefore: `approved`, `refused`, `expired`,
+`withdrawn`, `superseded`.
+
+**Not every gate is a decision.** Gate #2 asks the operator to *do* something
+only they can do — mint a credential. It has a question, a consumer, decay, and
+it blocked three artifacts for hours, but no ruling makes a token exist. It is
+admitted under `kind: resource`, and its ruling means "I will" or "I won't" —
+which deliberately leaves a gap between the ruling and the effect. That gap is
+real and must not be hidden: an `approved` resource gate is a promise, not a
+delivery, and the consumer still has to check that the thing arrived.
+
+## Still genuinely open
+
+- Whether `superseded` needs to name the superseding artifact by digest, the way
+  a ruling does, or whether free text is honest enough for something observed
+  after the fact.
+- Whether a resource gate should carry an explicit `delivered` observation
+  distinct from its ruling, or whether that is the consumer's business.

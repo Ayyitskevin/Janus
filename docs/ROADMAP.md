@@ -7,8 +7,14 @@ deliberately unavailable. Nothing here authorizes a cross-module seam.
 
 - `README.md`, `docs/VISION.md`, ADR 0001 (the gate model), this file.
 - The three invariants and the non-goal list are agreed before a schema exists.
-- Resolve ADR 0001's open questions: `kind` enum vs vocabulary, multi-option
-  gates, whether `horizon` is mandatory.
+- ~~Resolve ADR 0001's open questions~~ **done 2026-08-24**, settled against a
+  twelve-gate corpus from one real session (`docs/evidence/2026-08-24-gate-corpus.md`)
+  rather than by taste: `kind` is a four-value enum of *why a human is needed*
+  (`irreversible`/`authority`/`taste`/`resource`) and explicitly NOT the
+  irreversibility list, which covered only 3 of 12; multi-option gates are
+  required and are the majority shape; `horizon` is optional. The corpus also
+  forced a fifth terminal state, `superseded`, and admitted resource requests
+  that are not decisions.
 - Threat model sketch: Janus holds decision *metadata*, which can be sensitive
   even when the artifact is not — a gate title can leak an incident before it
   is public.

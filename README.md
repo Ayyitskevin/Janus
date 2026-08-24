@@ -37,12 +37,13 @@ One decision, raised by one agent, that only a human can make.
 | Field | Meaning |
 | --- | --- |
 | `question` | What is actually being asked, in one sentence a tired human can answer |
-| `kind` | Which category of irreversibility makes this a human's call |
+| `kind` | Why this needs a person: `irreversible` · `authority` · `taste` · `resource` |
 | `raised_by` | The seat that raised it |
 | `binding` | The exact artifact the answer applies to, pinned by SHA-256 |
 | `decay` | What becomes untrue or more expensive while this waits — with a re-runnable check |
 | `consumer` | Who acts on the answer, and what they will do |
-| `state` | `open` · `approved` · `refused` · `expired` · `withdrawn` |
+| `options` | Optional named alternatives; empty means approve/refuse. Six of twelve real gates needed these |
+| `state` | `open` · `approved` · `refused` · `expired` · `withdrawn` · `superseded` |
 
 Two fields carry most of the weight.
 
@@ -50,6 +51,12 @@ Two fields carry most of the weight.
 those bytes change, the ruling does not follow them — it is void, not "probably
 still fine." This is the one lesson the fleet has already paid for: an approval
 that names an artifact loosely can be replayed against a different artifact.
+
+**`superseded` is a first-class outcome.** Measured across one real session,
+the most common way a gate ends is not a ruling and not expiry — it is the world
+moving past the question while it sat open. A queue that cannot say so
+accumulates open gates whose subjects already shipped, and a board that lies
+once stops being read.
 
 **`decay` replaces priority.** A priority field records how urgent the raiser
 felt, which is not information. Decay records what the delay actually costs —
