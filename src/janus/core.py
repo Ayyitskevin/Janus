@@ -75,13 +75,8 @@ def digest_file(path: str | Path) -> str:
     return h.hexdigest()
 
 
-def digest_git_object(repo: str | Path, rev: str) -> str:
-    """Bind a git revision by the commit's own object id, resolved to full sha.
-
-    Binding a *commit* rather than a worktree digest is deliberate: the artifact
-    under decision is usually "this exact commit", and a dirty worktree must not
-    silently change what was approved.
-    """
+def git_commit_sha(repo: str | Path, rev: str) -> str:
+    """The full commit id a revision names right now, or a JanusError."""
     repo = Path(repo).expanduser()
     p = subprocess.run(
         ["git", "-C", str(repo), "rev-parse", f"{rev}^{{commit}}"],
@@ -91,11 +86,20 @@ def digest_git_object(repo: str | Path, rev: str) -> str:
     )
     if p.returncode != 0:
         raise JanusError(f"cannot bind: git could not resolve {rev!r} in {repo}")
-    sha = p.stdout.strip()
+    return p.stdout.strip()
+
+
+def digest_git_object(repo: str | Path, rev: str) -> str:
+    """Bind a git revision by the commit's own object id, resolved to full sha.
+
+    Binding a *commit* rather than a worktree digest is deliberate: the artifact
+    under decision is usually "this exact commit", and a dirty worktree must not
+    silently change what was approved.
+    """
     # A git object id is sha-1 (40) today; the column wants a 64-char digest, so
     # we store the sha256 OF the object id. It still pins exact bytes, and it
     # keeps one digest column honest instead of two half-used ones.
-    return hashlib.sha256(sha.encode()).hexdigest()
+    return hashlib.sha256(git_commit_sha(repo, rev).encode()).hexdigest()
 
 
 def resolve_binding(kind: str | None, locator: str | None) -> Binding | None:
@@ -116,7 +120,19 @@ def resolve_binding(kind: str | None, locator: str | None) -> Binding | None:
         if "@" not in locator:
             raise JanusError("git binding locator must be '<repo>@<rev>'")
         repo, rev = locator.rsplit("@", 1)
-        return Binding(kind, locator, digest_git_object(repo, rev))
+        # Resolved at raise time in BOTH dimensions, and for two different
+        # reasons. The repo path is made absolute for the same reason the file
+        # branch above is. The revision is pinned to a concrete commit because
+        # "<repo>@HEAD" binds a NAME, and invariant 2 is that a ruling binds a
+        # digest and not a name: every later commit moves HEAD, so such a gate
+        # reads BINDING NO LONGER MATCHES because the world moved at all, not
+        # because the reviewed bytes changed. Drift that fires on unrelated
+        # commits teaches the reader to ignore drift, which is worse than no
+        # drift check. Found by adoption: gate g55daf244a78 bound "<repo>@HEAD"
+        # and went void one unrelated commit later.
+        repo_abs = Path(repo).expanduser().resolve()
+        sha = git_commit_sha(repo_abs, rev)
+        return Binding(kind, f"{repo_abs}@{sha}", hashlib.sha256(sha.encode()).hexdigest())
     if kind == "text":
         return Binding(kind, "inline", hashlib.sha256(locator.encode()).hexdigest())
     raise JanusError(f"unknown binding kind {kind!r} (file | git | text)")
