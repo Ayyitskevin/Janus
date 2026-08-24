@@ -216,3 +216,66 @@ def test_a_file_binding_is_stored_absolute(conn, tmp_path, monkeypatch):
     monkeypatch.chdir(art.parent)
     ok, _ = core.verify_binding("file", b.locator, b.sha256)
     assert ok is True
+
+
+@pytest.fixture()
+def git_repo(tmp_path):
+    """A throwaway repo with one commit, isolated from the caller's git config."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path),
+           "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+    def git(*argv):
+        r = subprocess.run(["git", "-C", str(repo), *argv],
+                           capture_output=True, text=True, env=env)
+        assert r.returncode == 0, r.stderr
+        return r.stdout.strip()
+
+    git("init", "-q", "-b", "main")
+    (repo / "a.txt").write_text("v1")
+    git("add", "a.txt")
+    git("commit", "-qm", "one")
+    return repo, git
+
+
+def test_a_git_binding_pins_the_commit_and_does_not_follow_the_ref(git_repo):
+    """A gate bound to "<repo>@HEAD" must not go void because HEAD moved.
+
+    Found by adoption: g55daf244a78 bound this repo at HEAD and read BINDING NO
+    LONGER MATCHES one unrelated commit later. Invariant 2 says a ruling binds a
+    digest, not a name — so the name is resolved when the gate is raised.
+    """
+    repo, git = git_repo
+    b = core.resolve_binding("git", f"{repo}@HEAD")
+    head = git("rev-parse", "HEAD")
+    assert b.locator.endswith(f"@{head}"), b.locator
+    assert "HEAD" not in b.locator
+
+    (repo / "b.txt").write_text("unrelated")
+    git("add", "b.txt")
+    git("commit", "-qm", "two")
+    assert git("rev-parse", "HEAD") != head, "HEAD did not move — test is vacuous"
+
+    ok, sentence = core.verify_binding("git", b.locator, b.sha256)
+    assert ok is True, sentence
+
+
+def test_a_git_binding_still_detects_a_real_change_of_the_bound_commit(git_repo):
+    """The pin must not be so inert that nothing can ever drift."""
+    repo, git = git_repo
+    b = core.resolve_binding("git", f"{repo}@HEAD")
+    git("commit", "-q", "--amend", "-m", "one, reworded")
+    ok, sentence = core.verify_binding("git", f"{repo}@HEAD", b.sha256)
+    assert ok is False and "NO LONGER MATCHES" in sentence
+
+
+def test_a_git_binding_repo_path_is_stored_absolute(git_repo, monkeypatch):
+    repo, _ = git_repo
+    monkeypatch.chdir(repo.parent)
+    b = core.resolve_binding("git", "repo@HEAD")
+    assert Path(b.locator.rsplit("@", 1)[0]).is_absolute(), b.locator
+    monkeypatch.chdir(Path(__file__).parent)
+    ok, sentence = core.verify_binding("git", b.locator, b.sha256)
+    assert ok is True, sentence
