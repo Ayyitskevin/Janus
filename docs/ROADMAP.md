@@ -45,17 +45,24 @@ write.
 
 **Deliberately unavailable:** any HTTP surface, any write from another module.
 
-## M2 — decay, and the board
+## M2 — decay, and the board — **BUILT 2026-08-24, EXIT NOT MET**
 
-- `decay.check` executed on demand — never on a timer in this milestone — with
-  its exit status recorded as an observation, not a state change.
-- `janus board`: the one screen answering *what is waiting, how long, what
-  worsens.* Sorted by observed decay. If it does not fit one screen it is wrong.
-- Expiry as an explicit operator action first; automatic expiry only once the
-  horizon field has proven meaningful in practice.
+- ~~`decay.check` executed on demand~~ — `janus check <id>` (M1) and
+  `janus board --check`, which runs every check that exists. Never on a timer.
+  Exit status is recorded as an observation; observations never change state.
+- ~~`janus board`~~ — the one screen. Sorted by observed decay, then by a passed
+  horizon, then by the longest wait; no priority field exists to sort by.
+  Rank order is `landed` → `unchecked`/`unmeasured` → `not yet`: evidence of
+  slack demotes a gate, while absence of evidence does not promote it to safe.
+  When the queue outgrows one screen the board says how many it hid and why,
+  because a board that silently drops rows is the surface it replaces.
+- ~~Expiry as an explicit operator action~~ — `janus expire` (M1). Automatic
+  expiry still deliberately absent; `horizon` has not yet proven meaningful.
 
-**Exit:** the operator uses the board instead of grepping handoffs, measured by
-asking rather than assumed.
+**Exit — NOT MET.** The exit is *the operator uses the board instead of grepping
+handoffs, measured by asking rather than assumed*, and nobody has been asked.
+The code landing is not the milestone closing. This stays open until there is an
+answer, and "he has not said no" is not an answer.
 
 ## M3 — read-only surfaces
 

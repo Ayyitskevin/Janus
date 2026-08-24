@@ -15,10 +15,16 @@ janus --seat <seat> raise "<one sentence a tired human can answer>" \
   --kind taste --decay "what worsens while this waits" \
   --consumer "<seat>: what happens on approve, what happens on refuse"
 
-janus list                 # what is waiting
+janus board                # the one screen: what is waiting, how long, what worsens
 janus show <id>            # detail, and whether the binding still holds
 janus decide <id> --approve --reason "..." [--option <id>]
 ```
+
+`board` is the screen to read first. It sorts by *observed* decay rather than by
+any priority field — a decay check that has fired outranks one that has never
+been run, which outranks one measured to still have time. A gate whose decay
+sentence carries no re-runnable check is printed as `unmeasured`, because
+unknown is not the same as fine. `janus list` remains the plain enumeration.
 
 Four fields are mandatory and the schema refuses a gate without them. Bind the
 bytes with `--bind-kind file|git|text --bind <locator>`; offer alternatives with
@@ -102,8 +108,12 @@ insistent.
 
 ## Status
 
-Pre-implementation. The contract is being settled before any code is written;
-see `docs/VISION.md`, `docs/adr/0001-the-gate-model.md`, and `docs/ROADMAP.md`.
+M0 (the contract) and M1 (the ledger, the CLI, and adoption) shipped 2026-08-24.
+M2's board has landed; its exit is deliberately **not** met yet, because that
+exit is "the operator uses the board instead of grepping handoffs, measured by
+asking rather than assumed", and nobody has been asked. M0's exit — a non-author
+seat reviewing the model — is also still outstanding and is tracked as a gate in
+Janus itself. See `docs/ROADMAP.md`.
 
 ## License
 

@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
+import textwrap
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import core
@@ -190,6 +193,121 @@ def cmd_check(a, conn) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- board ----
+# M2. The one screen answering: what is waiting, how long, and what worsens.
+#
+# ADR 0001: "A board sorted by observed decay is sorted by risk of loss." Every
+# term in the sort is therefore something OBSERVED — a decay check that fired,
+# a horizon the clock has passed, how long the gate has actually waited. None of
+# it is a priority field, which this project rejects at every maturity level.
+
+# Rank by what is KNOWN, and note that evidence of slack demotes while absence
+# of evidence does not promote. "not yet" is the only row with a measurement
+# saying there is time; unmeasured is unknown, and unknown is not the same as
+# fine — so it sorts above the gate that proved it can wait.
+_DECAY_RANK = {"landed": 0, "unchecked": 1, "unmeasured": 1, "not yet": 2}
+
+
+def _decay_status(g: dict) -> str:
+    """What is actually known about this gate's decay — never a guess.
+
+    `unmeasured` and `unchecked` are printed rather than left blank on purpose.
+    A decay sentence with no re-runnable check is a claim, and a board that
+    renders a claim identically to an observation flatters the prose.
+    """
+    obs = [o for o in g["observations"] if o["kind"] == "decay"]
+    if obs:                                   # get_gate returns these newest-first
+        return "landed" if obs[0]["exit_code"] == 0 else "not yet"
+    return "unchecked" if g["decay_check"] else "unmeasured"
+
+
+def _age(iso: str) -> tuple[int, str]:
+    t = datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    secs = max(int((datetime.now(timezone.utc) - t).total_seconds()), 0)
+    if secs < 3600:
+        return secs, f"{secs // 60}m"
+    if secs < 86400:
+        return secs, f"{secs // 3600}h"
+    return secs, f"{secs // 86400}d"
+
+
+def _overdue(g: dict) -> bool:
+    """A horizon is the raiser's own stated deadline; the clock observes it."""
+    if not g["horizon"]:
+        return False
+    return g["horizon"][:10] < core.now()[:10]
+
+
+def _clip(text: str, width: int) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= width else text[: width - 1] + "…"
+
+
+def cmd_board(a, conn) -> int:
+    gates = core.list_gates(conn, state="open")
+    if a.check:
+        # On demand, never on a timer (M2). An observation records an exit
+        # status; it never changes a gate's state.
+        for g in gates:
+            if g["decay_check"]:
+                try:
+                    core.observe(conn, g["id"], "decay", core.seat_actor(a.seat))
+                except (JanusError, OSError) as e:
+                    print(f"decay check failed to run for {g['id']}: {e}", file=sys.stderr)
+        gates = core.list_gates(conn, state="open")
+
+    if not gates:
+        print("Nothing is waiting on a human.")
+        return 0
+
+    rows = []
+    for g in gates:
+        secs, age = _age(g["raised_at"])
+        status = _decay_status(g)
+        rows.append({"g": g, "secs": secs, "age": age, "status": status,
+                     "overdue": _overdue(g)})
+    rows.sort(key=lambda r: (_DECAY_RANK[r["status"]], 0 if r["overdue"] else 1, -r["secs"]))
+
+    term = shutil.get_terminal_size(fallback=(100, 24))
+    width = min(max(term.columns, 80), 120)
+    head = 2 + 10 + 2 + 5 + 2 + 12 + 2 + 12 + 2      # indent + the five columns
+    body = width - head
+
+    landed = sum(1 for r in rows if r["status"] == "landed")
+    unmeasured = sum(1 for r in rows if r["status"] in ("unmeasured", "unchecked"))
+    summary = f"{len(rows)} waiting on a human — longest wait {max(r['age'] for r in rows)}"
+    if landed:
+        summary += f" · {landed} with decay observed to have landed"
+    if unmeasured:
+        summary += f" · {unmeasured} whose decay has never been checked"
+    print(summary + "\n")
+
+    # One screen or it is wrong (ROADMAP M2). When it does not fit, say so —
+    # a board that silently drops rows is exactly the surface it replaces.
+    per_gate = 2
+    shown = len(rows) if a.all else max((max(term.lines, 12) - 8) // per_gate, 1)
+    for r in rows[:shown]:
+        g = r["g"]
+        age = r["age"] + ("!" if r["overdue"] else "")
+        print(f"  {r['status']:<10}  {age:<5}  {g['id']:<12}  {g['kind']:<12}  "
+              f"{_clip(g['question'], body)}")
+        print(f"  {'':<10}  {'':<5}  {'':<12}  {'worsens →':<12}  "
+              f"{_clip(g['decay'], body)}")
+
+    hidden = len(rows) - shown
+    if hidden > 0:
+        print(f"\n  {hidden} more below the fold. The queue no longer fits one screen,")
+        print("  which is the finding, not a display bug. `janus board --all` shows every one.")
+
+    print(textwrap.dedent("""
+        Sorted by observed decay, then a passed horizon (!), then the longest wait.
+        'unmeasured' means the decay sentence carries no re-runnable check — unknown,
+        which is not the same as fine. `janus board --check` runs the checks that exist.
+        `janus show <id>` for the full question and its options.
+        Reading this board is not authority to act.""").rstrip())
+    return 0
+
+
 def cmd_doctor(a, conn) -> int:
     problems = 0
     print(f"db          {core.DEFAULT_DB if not a.db else a.db}")
@@ -299,6 +417,12 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("gate_id")
     c.add_argument("--kind", default="decay", choices=("decay", "delivery"))
     c.set_defaults(fn=cmd_check)
+
+    b = sub.add_parser("board", help="the one screen: what is waiting, how long, what worsens")
+    b.add_argument("--check", action="store_true",
+                   help="run every decay check first (on demand; observations only)")
+    b.add_argument("--all", action="store_true", help="show every gate, past the one-screen fold")
+    b.set_defaults(fn=cmd_board)
 
     doc = sub.add_parser("doctor", help="ledger health, append-only proof, drift")
     doc.set_defaults(fn=cmd_doctor)
