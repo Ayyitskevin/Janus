@@ -332,3 +332,57 @@ def test_the_board_header_cannot_contradict_its_own_rows(tmp_path):
 
     out = _board(db)
     assert "longest wait 1h" in out, out.splitlines()[0]
+
+
+def test_doctor_does_not_report_drift_on_gates_nobody_will_act_on(tmp_path):
+    """A superseded gate drifting is noise, and it printed as if it were open.
+
+    Drift matters where it can still mislead someone into acting: a gate still
+    waiting, or one a human ruled on whose consumer may yet act. `doctor` listed
+    every gate in the ledger, indented under the "open gates" heading, so a gate
+    closed hours ago read as a live problem. A doctor that cries wolf stops
+    being read.
+    """
+    db = tmp_path / "d.db"
+    conn = core.connect(db)
+    art = tmp_path / "a.txt"
+    art.write_text("v1")
+
+    stale = _gate(conn, question="closed and irrelevant",
+                  binding=core.resolve_binding("file", str(art)))
+    live = _gate(conn, question="still waiting",
+                 binding=core.resolve_binding("file", str(art)))
+    core.close_gate(conn, stale, state="superseded", reason="the world moved on",
+                    actor="tester")
+    art.write_text("v2")            # both bindings now drift
+
+    r = subprocess.run(
+        [sys.executable, "-m", "janus.cli", "--db", str(db), "doctor"],
+        capture_output=True, text=True,
+        env={"PATH": "/usr/bin:/bin",
+             "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
+             "HOME": str(tmp_path), "USER": "tester"},
+    )
+    assert r.returncode == 0, r.stderr
+    assert live in r.stdout, "the open drifted gate must still be reported"
+    assert stale not in r.stdout, r.stdout
+
+
+def test_doctor_still_reports_drift_on_a_gate_a_human_ruled_on(tmp_path):
+    """The counterpart: a ruling whose bytes moved is exactly what to shout about."""
+    db = tmp_path / "d.db"
+    conn = core.connect(db)
+    art = tmp_path / "a.txt"
+    art.write_text("v1")
+    g = _gate(conn, binding=core.resolve_binding("file", str(art)))
+    core.close_gate(conn, g, state="approved", reason="ship it", actor="kevin")
+    art.write_text("v2")
+
+    r = subprocess.run(
+        [sys.executable, "-m", "janus.cli", "--db", str(db), "doctor"],
+        capture_output=True, text=True,
+        env={"PATH": "/usr/bin:/bin",
+             "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
+             "HOME": str(tmp_path), "USER": "tester"},
+    )
+    assert g in r.stdout and "approved" in r.stdout, r.stdout

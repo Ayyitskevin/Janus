@@ -346,15 +346,23 @@ def cmd_doctor(a, conn) -> int:
     open_gates = core.list_gates(conn, state="open")
     print(f"open gates  {len(open_gates)}")
     drifted = 0
-    for g in core.list_gates(conn, state="all"):
+    # Drift is only worth reporting where it can still mislead someone into
+    # acting: a gate still waiting, or one a human actually RULED on, whose
+    # consumer may yet act on that ruling. A superseded, withdrawn or expired
+    # gate drifting is noise — nobody ruled and nobody will act — and printing it
+    # indented under "open gates" read as though it were still open, which is
+    # how this line first shipped. A doctor that cries wolf stops being read.
+    actionable = open_gates + [g for st in core.RULED_STATES
+                               for g in core.list_gates(conn, state=st)]
+    for g in actionable:
         if g["binding_sha256"]:
             ok, _ = core.verify_binding(
                 g["binding_kind"], g["binding_locator"], g["binding_sha256"])
             if ok is False:
                 drifted += 1
-                print(f"  drifted: {g['id']} — bound artifact no longer matches")
+                print(f"drift       {g['id']} ({g['state']}) — bound artifact no longer matches")
     if drifted:
-        print(f"drift       {drifted} gate(s) bound to changed artifacts")
+        print(f"drift       {drifted} actionable gate(s) bound to changed artifacts")
     seat = core.seat_actor(getattr(a, "seat", None))
     print(f"attribution writes will be attributed to {seat}")
     print("\nJanus records pending authority; it does not grant authority.")
