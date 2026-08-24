@@ -79,3 +79,15 @@ insistent.
 
 Pre-implementation. The contract is being settled before any code is written;
 see `docs/VISION.md`, `docs/adr/0001-the-gate-model.md`, and `docs/ROADMAP.md`.
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).
+
+Permissive rather than copyleft, deliberately. Part of what Janus is trying to
+be useful for is a *shape* — a gate whose ruling binds a digest, and a queue
+ordered by decay rather than by asserted priority. A format and a mechanism
+spread by being cheap to adopt and safe to reimplement, which is what the
+Apache patent grant is for. Copyleft's strongest tool is its network clause,
+and Janus deliberately never becomes a network service: loopback only, one
+user, no remote bind. There would be almost nothing for that clause to act on.
