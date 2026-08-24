@@ -23,7 +23,13 @@ deliberately unavailable. Nothing here authorizes a cross-module seam.
 
 **Exit:** a non-author seat reviews the model and the non-goals.
 
-## M1 — the local core, with adoption shipped alongside
+## M1 — the local core, with adoption shipped alongside — **SHIPPED 2026-08-24**
+
+Exit met: three real fleet gates raised into `~/.janus/janus.db`, one ruled
+end to end, and a decay check run as an observation. 20 invariant tests green.
+Adoption shipped in the same commit: `janus` on `PATH` and the fleet `janus`
+skill. What is deliberately still absent: any HTTP surface, any cross-module
+write.
 
 - Append-only SQLite: `gates`, `rulings`, `audit_events`. Triggers refuse update
   and delete. Forward-only packaged migrations with recorded checksums.

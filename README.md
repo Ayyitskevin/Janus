@@ -8,6 +8,23 @@ it waits, and what was eventually ruled — and it never decides anything itself
 
 > Janus records pending authority; it does not grant authority.
 
+## Quickstart
+
+```bash
+janus --seat <seat> raise "<one sentence a tired human can answer>" \
+  --kind taste --decay "what worsens while this waits" \
+  --consumer "<seat>: what happens on approve, what happens on refuse"
+
+janus list                 # what is waiting
+janus show <id>            # detail, and whether the binding still holds
+janus decide <id> --approve --reason "..." [--option <id>]
+```
+
+Four fields are mandatory and the schema refuses a gate without them. Bind the
+bytes with `--bind-kind file|git|text --bind <locator>`; offer alternatives with
+repeatable `--option id:label[:detail]`, marking your recommendation with a
+trailing `*` on the id. Full guidance lives in the fleet `janus` skill.
+
 ## Why this exists
 
 A well-run agent fleet manufactures human-decision debt on purpose. The

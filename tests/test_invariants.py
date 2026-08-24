@@ -1,0 +1,199 @@
+"""Invariant-level regression tests.
+
+AGENTS.md: "Treat the gate ledger, ruling records, binding digests, and
+migration history as high-integrity surfaces. Smallest reviewed change, plus an
+invariant-level regression test."
+
+These cover the three non-negotiable invariants and the two traps the corpus
+found. Each test is written so it CANNOT pass vacuously — a check that only
+passes because nothing was there is the failure mode this project has already
+paid for elsewhere in the fleet.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from janus import core  # noqa: E402
+from janus.core import JanusError  # noqa: E402
+
+
+@pytest.fixture()
+def conn(tmp_path):
+    return core.connect(tmp_path / "t.db")
+
+
+def _gate(conn, **kw):
+    args = dict(
+        question="Ship it?", kind="taste", decay="momentum is lost",
+        consumer="claude-code: proceeds on approve", actor="tester",
+    )
+    args.update(kw)
+    return core.raise_gate(conn, **args)
+
+
+# ------------------------- invariant 1: open or closed, never both ----------
+def test_a_gate_cannot_hold_two_terminal_states(conn):
+    g = _gate(conn)
+    core.close_gate(conn, g, state="approved", reason="yes", actor="kevin")
+    with pytest.raises(JanusError, match="already approved"):
+        core.close_gate(conn, g, state="refused", reason="no", actor="kevin")
+    assert core.get_gate(conn, g)["state"] == "approved"
+
+
+def test_the_database_itself_refuses_a_second_terminal_row(conn):
+    """Not just the Python guard — the PK must make it impossible."""
+    g = _gate(conn)
+    core.close_gate(conn, g, state="approved", reason="yes", actor="kevin")
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO rulings (gate_id, state, ruled_at, ruled_by, reason)"
+            " VALUES (?,?,?,?,?)", (g, "refused", core.now(), "sneaky", "bypass"))
+
+
+# ------------------------------ invariant 2: a ruling binds bytes -----------
+def test_binding_detects_drift(conn, tmp_path):
+    art = tmp_path / "a.txt"
+    art.write_text("original")
+    b = core.resolve_binding("file", str(art))
+    g = _gate(conn, binding=b)
+    ok, _ = core.verify_binding("file", str(art), core.get_gate(conn, g)["binding_sha256"])
+    assert ok is True
+    art.write_text("changed")
+    ok, sentence = core.verify_binding("file", str(art), core.get_gate(conn, g)["binding_sha256"])
+    assert ok is False and "NO LONGER MATCHES" in sentence
+
+
+def test_unverifiable_binding_is_not_reported_as_fine(conn, tmp_path):
+    """A missing artifact must read as 'cannot tell', never as a match."""
+    art = tmp_path / "gone.txt"
+    art.write_text("x")
+    b = core.resolve_binding("file", str(art))
+    art.unlink()
+    ok, sentence = core.verify_binding("file", str(art), b.sha256)
+    assert ok is None and "CANNOT VERIFY" in sentence
+
+
+def test_ruling_records_the_digest_observed_at_ruling_time(conn, tmp_path):
+    art = tmp_path / "a.txt"
+    art.write_text("v1")
+    g = _gate(conn, binding=core.resolve_binding("file", str(art)))
+    art.write_text("v2")
+    core.close_gate(conn, g, state="approved", reason="ok", actor="kevin")
+    gate = core.get_gate(conn, g)
+    # The ruling pins what was ruled on, which differs from what was raised.
+    assert gate["ruling"]["bound_sha256"] != gate["binding_sha256"]
+    assert gate["ruling"]["bound_sha256"] == core.digest_file(art)
+
+
+# --------------------- invariant 3: reading is not authority ----------------
+def test_janus_exposes_no_authorization_verb():
+    """Guard against a future 'is_authorized' creeping in.
+
+    Janus must never answer 'may I act?'. If this fails, something added a
+    permission-path surface and that is wrong even when convenient.
+    """
+    banned = ("is_authorized", "authorize", "permit", "allow_action", "can_act")
+    surface = set(dir(core))
+    assert not surface & set(banned)
+
+
+# ------------------------------------- append-only is real, not documented --
+@pytest.mark.parametrize("table", ["gates", "rulings", "audit_events", "observations"])
+def test_update_and_delete_are_refused_on_real_rows(conn, table):
+    g = _gate(conn)
+    core.close_gate(conn, g, state="approved", reason="ok", actor="kevin")
+    core.audit(conn, "tester", "probe", g, "x")
+    conn.execute(
+        "INSERT INTO observations (gate_id, at, kind, command, exit_code)"
+        " VALUES (?,?,?,?,?)", (g, core.now(), "decay", "true", 0))
+    conn.commit()
+    rows = conn.execute(f"SELECT COUNT(*) c FROM {table}").fetchone()["c"]
+    assert rows > 0, f"{table} is empty — this test would pass vacuously"
+    with pytest.raises(sqlite3.DatabaseError):
+        conn.execute(f"UPDATE {table} SET rowid = rowid")
+    conn.rollback()
+    with pytest.raises(sqlite3.DatabaseError):
+        conn.execute(f"DELETE FROM {table}")
+    conn.rollback()
+
+
+# ------------------------------------------- corpus-driven requirements -----
+def test_a_gate_with_options_cannot_be_approved_without_choosing_one(conn):
+    g = _gate(conn, options=[{"id": "a", "label": "A", "recommended": True},
+                             {"id": "b", "label": "B"}])
+    with pytest.raises(JanusError):
+        core.close_gate(conn, g, state="approved", reason="ok", actor="kevin")
+
+
+def test_an_approval_cannot_name_an_option_the_gate_does_not_offer(conn):
+    g = _gate(conn, options=[{"id": "a", "label": "A", "recommended": True}])
+    with pytest.raises(JanusError):
+        core.close_gate(conn, g, state="approved", reason="ok", actor="kevin",
+                        option_id="ghost")
+
+
+def test_superseded_is_available_as_a_terminal_state(conn):
+    """The corpus' most common ending: the world moved past the question."""
+    g = _gate(conn)
+    core.close_gate(conn, g, state="superseded", reason="PR merged without it",
+                    actor="observer")
+    assert core.get_gate(conn, g)["state"] == "superseded"
+
+
+def test_kind_enum_has_no_escape_hatch(conn):
+    with pytest.raises(JanusError, match="kind must be one of"):
+        _gate(conn, kind="other")
+
+
+def test_a_question_too_long_to_answer_is_refused(conn):
+    with pytest.raises(JanusError, match="280"):
+        _gate(conn, question="x " * 200)
+
+
+# ------------------------------------------------------ seat attribution ----
+def test_seat_is_appended_to_the_os_user_never_replaces_it(monkeypatch):
+    monkeypatch.setenv("USER", "kevin-lee")
+    assert core.seat_actor(None) == "kevin-lee"
+    assert core.seat_actor("codex") == "kevin-lee+codex"
+
+
+def test_a_seat_label_cannot_smuggle_another_identity(monkeypatch):
+    monkeypatch.setenv("USER", "kevin-lee")
+    for bad in ("root/../admin", "kevin lee", "SEAT!", "a" * 40):
+        with pytest.raises(JanusError):
+            core.seat_actor(bad)
+
+
+# ------------------------------------------------------------- migrations ---
+def test_an_edited_applied_migration_is_refused(conn, tmp_path, monkeypatch):
+    conn.execute("UPDATE schema_migrations SET checksum = 'tampered'")
+    conn.commit()
+    with pytest.raises(JanusError, match="has changed since it was applied"):
+        core.migrate(conn)
+
+
+# ------------------------------------------------------------ observations --
+def test_an_observation_never_changes_state(conn):
+    g = _gate(conn, decay_check="true")
+    core.observe(conn, g, "decay", "tester")
+    assert core.get_gate(conn, g)["state"] == "open"
+
+
+def test_doctor_exits_zero_on_a_healthy_ledger(tmp_path):
+    r = subprocess.run(
+        [sys.executable, "-m", "janus.cli", "--db", str(tmp_path / "d.db"), "doctor"],
+        capture_output=True, text=True,
+        env={"PATH": "/usr/bin:/bin", "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
+             "HOME": str(tmp_path), "USER": "tester"},
+    )
+    assert r.returncode == 0, r.stderr
+    assert "append-only enforced (UPDATE" in r.stdout
+    assert "append-only enforced (DELETE" in r.stdout
