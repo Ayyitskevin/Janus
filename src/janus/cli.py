@@ -11,6 +11,7 @@ import argparse
 import json
 import shutil
 import statistics
+import subprocess
 import sys
 import textwrap
 from datetime import datetime, timezone
@@ -66,6 +67,20 @@ def cmd_raise(a, conn) -> int:
     if binding:
         print(f"  bound to {binding.kind}:{binding.locator} @ {binding.sha256[:12]}")
     print(f"  consumer: {a.consumer}")
+
+    # Said at the one moment it can still be acted on. The scorecard's worst
+    # number is that 7 of 8 gates carry no decay check, which makes the board's
+    # entire sort run on one data point — and every one of those gates was
+    # raised by an agent that had just read a skill telling it to add one.
+    # Documentation was not where that habit was being lost.
+    if not a.decay_check:
+        print("  no decay check — the board will print this gate as 'unmeasured' and "
+              "sort it\n              below every measured one. "
+              "--decay-check '<command>' (exit 0 = the cost arrived).")
+    if a.kind == "resource" and not a.delivery_check:
+        print("  no delivery check — an approved resource gate is a promise, not a "
+              "delivery.\n              Without one, nothing can tell you whether it "
+              "ever landed.")
     return 0
 
 
@@ -553,8 +568,42 @@ def cmd_stats(a, conn) -> int:
     return 0
 
 
+def _code_origin(module_path: Path) -> dict:
+    """Where the running code lives, and whether it can move under the fleet.
+
+    The `janus` on every seat's PATH was an EDITABLE install of a working tree,
+    so whatever branch that tree happened to be checked out to was, silently,
+    the fleet's production CLI — a reviewer's `git switch` changed the binary
+    every other seat was running. Reporting it is not the fix, but an
+    undiagnosable hazard is worse than a diagnosed one, and `doctor` is where a
+    reader already goes to ask whether the tool can be trusted.
+    """
+    parts = set(module_path.parts)
+    installed = bool(parts & {"site-packages", "dist-packages"})
+    info = {"path": str(module_path), "installed": installed,
+            "branch": None, "dirty": None}
+    if installed:
+        return info
+    for cmd, key in ((["rev-parse", "--abbrev-ref", "HEAD"], "branch"),
+                     (["status", "--porcelain"], "dirty")):
+        r = subprocess.run(["git", "-C", str(module_path), *cmd],
+                           capture_output=True, text=True, timeout=10)
+        if r.returncode == 0:
+            info[key] = r.stdout.strip() if key == "branch" else bool(r.stdout.strip())
+    return info
+
+
 def cmd_doctor(a, conn) -> int:
     problems = 0
+    origin = _code_origin(Path(core.__file__).resolve().parent)
+    if origin["installed"]:
+        print(f"code        {origin['path']} (installed copy)")
+    else:
+        where = f" on branch {origin['branch']}" if origin["branch"] else ""
+        dirty = ", with uncommitted changes" if origin["dirty"] else ""
+        print(f"code        {origin['path']} (EDITABLE working tree{where}{dirty})")
+        print("            whatever is checked out here is what every seat on this "
+              "host runs")
     print(f"db          {core.DEFAULT_DB if not a.db else a.db}")
     versions = [r["version"] for r in conn.execute(
         "SELECT version FROM schema_migrations ORDER BY version")]

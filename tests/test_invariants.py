@@ -735,3 +735,74 @@ def test_the_scorecard_on_an_empty_ledger_invents_nothing(tmp_path):
     out = _stats(tmp_path / "empty.db")
     assert "0 gates" in out
     assert "%" not in out, "a percentage was computed over an empty ledger"
+
+
+# ------------------------------------- where the running code actually lives ---
+def test_an_installed_copy_and_a_working_tree_are_told_apart(git_repo, tmp_path):
+    """The fleet's `janus` was an editable install of a working tree.
+
+    A reviewer's `git switch` in that tree silently changed the binary every
+    other seat on the host was running. Reporting it is not the fix, but an
+    undiagnosable hazard is worse than a diagnosed one.
+    """
+    from janus import cli
+    repo, git = git_repo
+
+    installed = cli._code_origin(
+        tmp_path / "venv" / "lib" / "python3.12" / "site-packages" / "janus")
+    assert installed["installed"] is True
+    assert installed["branch"] is None, "an installed copy has no branch to report"
+
+    live = cli._code_origin(repo)
+    assert live["installed"] is False
+    assert live["branch"] == "main", live
+    assert live["dirty"] is False
+
+    (repo / "scratch.txt").write_text("uncommitted")
+    assert cli._code_origin(repo)["dirty"] is True
+
+
+def test_doctor_says_where_its_code_came_from(tmp_path):
+    r = subprocess.run(
+        [sys.executable, "-m", "janus.cli", "--db", str(tmp_path / "d.db"), "doctor"],
+        capture_output=True, text=True,
+        env={"PATH": "/usr/bin:/bin",
+             "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
+             "HOME": str(tmp_path), "USER": "tester"},
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.startswith("code        "), r.stdout.splitlines()[:2]
+
+
+# --------------------------------- the nudge at the moment it can be acted on ---
+def _raise(tmp_path, *argv):
+    r = subprocess.run(
+        [sys.executable, "-m", "janus.cli", "--db", str(tmp_path / "n.db"),
+         "--seat", "tester", "raise", "Does this gate carry a check?",
+         "--decay", "unclear", "--consumer", "tester: acts", *argv],
+        capture_output=True, text=True,
+        env={"PATH": "/usr/bin:/bin",
+             "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
+             "HOME": str(tmp_path), "USER": "tester"},
+    )
+    assert r.returncode == 0, r.stderr
+    return r.stdout
+
+
+def test_raising_without_a_decay_check_says_so_while_it_can_still_be_fixed(tmp_path):
+    """7 of the first 8 gates carried no decay check, so the board's whole sort
+    ran on one data point — and every one was raised by an agent that had just
+    read a skill telling it to add one. The habit was not being lost in the docs.
+    """
+    assert "no decay check" in _raise(tmp_path, "--kind", "taste")
+    assert "no decay check" not in _raise(tmp_path, "--kind", "taste",
+                                          "--decay-check", "true")
+
+
+def test_a_resource_gate_without_a_delivery_check_is_told_it_cannot_be_tracked(tmp_path):
+    out = _raise(tmp_path, "--kind", "resource")
+    assert "no delivery check" in out and "promise, not a delivery" in out
+    assert "no delivery check" not in _raise(tmp_path, "--kind", "resource",
+                                             "--delivery-check", "true")
+    # Only resource gates promise a thing; the others must not be nagged.
+    assert "no delivery check" not in _raise(tmp_path, "--kind", "taste")
