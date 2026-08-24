@@ -216,3 +216,89 @@ def test_a_file_binding_is_stored_absolute(conn, tmp_path, monkeypatch):
     monkeypatch.chdir(art.parent)
     ok, _ = core.verify_binding("file", b.locator, b.sha256)
     assert ok is True
+
+
+# ------------------------------------------------------------------ board ---
+def _board(db: Path, *argv, lines: int = 40, cols: int = 110):
+    r = subprocess.run(
+        [sys.executable, "-m", "janus.cli", "--db", str(db), "board", *argv],
+        capture_output=True, text=True,
+        env={"PATH": "/usr/bin:/bin",
+             "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
+             "HOME": str(db.parent), "USER": "tester",
+             "COLUMNS": str(cols), "LINES": str(lines)},
+    )
+    assert r.returncode == 0, r.stderr
+    return r.stdout
+
+
+def test_the_board_sorts_by_observed_decay_not_by_age(tmp_path):
+    """ADR 0001: a board sorted by observed decay is sorted by risk of loss.
+
+    The older gate is unmeasured; the newer one has a decay check that fired.
+    Age-ordering or insertion-ordering would both put the older one first, so
+    this can only pass because the observation moved it.
+    """
+    db = tmp_path / "b.db"
+    conn = core.connect(db)
+    old = _gate(conn, question="OLD unmeasured one")
+    new = _gate(conn, question="NEW one whose decay landed", decay_check="true")
+    core.observe(conn, new, "decay", "tester")
+    assert core.get_gate(conn, old)["raised_at"] <= core.get_gate(conn, new)["raised_at"]
+
+    out = _board(db)
+    assert out.index(new) < out.index(old), out
+
+
+def test_the_board_never_renders_an_unchecked_claim_as_an_observation(tmp_path):
+    """A decay sentence nobody can re-run is a claim. It must not look measured."""
+    db = tmp_path / "b.db"
+    conn = core.connect(db)
+    _gate(conn, question="no check at all")
+    measured = _gate(conn, question="checked and there is still time", decay_check="false")
+    core.observe(conn, measured, "decay", "tester")
+
+    out = _board(db)
+    assert "unmeasured" in out
+    assert "not yet" in out
+    assert "never been checked" in out
+
+
+def test_the_board_discloses_what_the_one_screen_fold_hid(tmp_path):
+    """No silent caps. A board that quietly drops rows is the surface it replaces."""
+    db = tmp_path / "b.db"
+    conn = core.connect(db)
+    ids = [_gate(conn, question=f"gate number {i}") for i in range(8)]
+
+    folded = _board(db, lines=12)          # (12 - 8) // 2 == 2 gates fit
+    assert "more below the fold" in folded
+    hidden = [g for g in ids if g not in folded]
+    assert len(hidden) == 6, folded
+    assert f"{len(hidden)} more below the fold" in folded
+
+    everything = _board(db, "--all", lines=12)
+    assert all(g in everything for g in ids)
+    assert "more below the fold" not in everything
+
+
+def test_board_check_records_observations_without_changing_state(tmp_path):
+    db = tmp_path / "b.db"
+    conn = core.connect(db)
+    g = _gate(conn, decay_check="true")
+    before = conn.execute("SELECT COUNT(*) c FROM observations").fetchone()["c"]
+    assert before == 0
+
+    _board(db, "--check")
+
+    fresh = core.connect(db)
+    after = fresh.execute("SELECT COUNT(*) c FROM observations").fetchone()["c"]
+    assert after == 1, "the check did not run — this test would pass vacuously"
+    assert core.get_gate(fresh, g)["state"] == "open"
+
+
+def test_the_board_states_that_reading_it_is_not_authority(tmp_path):
+    """Invariant 3, on the surface most likely to be mistaken for a permission list."""
+    db = tmp_path / "b.db"
+    conn = core.connect(db)
+    _gate(conn)
+    assert "not authority to act" in _board(db)
