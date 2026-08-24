@@ -139,6 +139,29 @@ def cmd_show(a, conn) -> int:
     return 0
 
 
+# Only `approved` and `refused` are rulings. The other three are terminal because
+# NOBODY ruled — the corpus that forced `superseded` says so outright — and the
+# close path printed "This records that a human ruled" over all five. That is
+# wrong on the exact distinction this project exists to hold: Janus records that
+# a human ruled, on which bytes, and when. It shipped that way, and the first
+# supersede in the live ledger printed it about a gate no human had answered.
+#
+# Keyed by state and asserted against TERMINAL_STATES in the tests, so a sixth
+# terminal state fails a test instead of quietly inheriting the wrong sentence.
+_CLOSING_NOTE = {
+    "approved": "This records that a human ruled. It grants nothing: the consumer "
+                "re-verifies before acting.",
+    "refused": "This records that a human ruled. It grants nothing: the consumer "
+               "re-verifies before acting.",
+    "withdrawn": "NOBODY RULED — the raiser took the question back. Nothing was decided "
+                 "here, so nothing here can be cited as a decision.",
+    "expired": "NOBODY RULED — time ran out. A closed gate is not an answer; if the "
+               "question still matters it has to be raised again.",
+    "superseded": "NOBODY RULED — the world moved past the question. The reason records "
+                  "WHAT overtook it, never that anything was decided.",
+}
+
+
 def _close(a, conn, state: str, reason: str) -> int:
     actor = core.seat_actor(a.seat)
     g = core.get_gate(conn, a.gate_id)
@@ -162,8 +185,7 @@ def _close(a, conn, state: str, reason: str) -> int:
     print(f"{a.gate_id} is now {g['state']} (by {actor})")
     if g["ruling"] and g["ruling"]["bound_sha256"]:
         print(f"  ruled on bytes @ {g['ruling']['bound_sha256'][:16]}")
-    print("  This records that a human ruled. It grants nothing: the consumer "
-          "re-verifies before acting.")
+    print("  " + _CLOSING_NOTE[g["state"]])
     return 0
 
 

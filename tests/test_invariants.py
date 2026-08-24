@@ -582,3 +582,63 @@ def test_a_delivery_verdict_survives_being_pushed_past_the_observation_limit(tmp
         "the delivery row is still inside the window — this test would pass vacuously"
     assert core.latest_observation(conn, g, "delivery")["exit_code"] == 0
     assert g not in _board(db), "a delivered promise came back onto the board"
+
+
+# ------------------------------------------- closing a gate is not always a ruling ---
+def test_every_terminal_state_has_its_own_closing_sentence():
+    """A sixth terminal state must fail here, not inherit a wrong sentence."""
+    from janus import cli
+    assert set(cli._CLOSING_NOTE) == set(core.TERMINAL_STATES)
+
+
+def test_only_a_ruling_is_described_as_a_human_ruling():
+    """Janus records that a HUMAN RULED, on which bytes, and when.
+
+    `expired`, `withdrawn` and `superseded` are terminal because nobody ruled.
+    Saying "a human ruled" over them is wrong on the one distinction the whole
+    project exists to hold, and it shipped that way.
+    """
+    from janus import cli
+    for state in core.TERMINAL_STATES:
+        note = cli._CLOSING_NOTE[state]
+        if state in core.RULED_STATES:
+            assert "a human ruled" in note, state
+        else:
+            assert "NOBODY RULED" in note, state
+            assert "human ruled" not in note, state
+
+
+def test_superseding_a_gate_does_not_claim_anyone_ruled(tmp_path):
+    """End to end, because the bug was in what the command actually printed."""
+    db = tmp_path / "c.db"
+    conn = core.connect(db)
+    g = _gate(conn)
+    r = subprocess.run(
+        [sys.executable, "-m", "janus.cli", "--db", str(db), "supersede", g,
+         "--reason", "the PR merged without it"],
+        capture_output=True, text=True,
+        env={"PATH": "/usr/bin:/bin",
+             "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
+             "HOME": str(tmp_path), "USER": "tester"},
+    )
+    assert r.returncode == 0, r.stderr
+    assert "is now superseded" in r.stdout
+    assert "human ruled" not in r.stdout, r.stdout
+    assert "NOBODY RULED" in r.stdout, r.stdout
+
+
+def test_approving_a_gate_still_says_a_human_ruled(tmp_path):
+    """The counterpart, so the fix cannot be "delete the sentence everywhere"."""
+    db = tmp_path / "c.db"
+    conn = core.connect(db)
+    g = _gate(conn)
+    r = subprocess.run(
+        [sys.executable, "-m", "janus.cli", "--db", str(db), "decide", g,
+         "--approve", "--reason", "ship it"],
+        capture_output=True, text=True,
+        env={"PATH": "/usr/bin:/bin",
+             "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
+             "HOME": str(tmp_path), "USER": "tester"},
+    )
+    assert r.returncode == 0, r.stderr
+    assert "This records that a human ruled" in r.stdout, r.stdout
