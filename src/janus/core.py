@@ -350,6 +350,25 @@ def get_gate(conn: sqlite3.Connection, gate_id: str) -> dict | None:
     return gate
 
 
+def latest_observation(conn: sqlite3.Connection, gate_id: str, kind: str) -> dict | None:
+    """The most recent observation OF THIS KIND, from a query that cannot truncate.
+
+    `get_gate` attaches the last five observations of any kind, which is right
+    for display and wrong for deriving a verdict: five decay checks push an
+    older delivery result past the limit, and a caller reading that list would
+    report a promise that HAS landed as never checked. Same family as every
+    other bug this project has paid for — a check answering "unknown" in a way
+    that reads as "fine".
+
+    Ties on `at` are broken by insertion order; the column has second
+    granularity and two checks can share a second.
+    """
+    row = conn.execute(
+        "SELECT * FROM observations WHERE gate_id = ? AND kind = ?"
+        " ORDER BY at DESC, id DESC LIMIT 1", (gate_id, kind)).fetchone()
+    return dict(row) if row else None
+
+
 def list_gates(conn: sqlite3.Connection, *, state: str = "open") -> list[dict]:
     if state == "all":
         rows = conn.execute("SELECT id FROM gates ORDER BY raised_at").fetchall()

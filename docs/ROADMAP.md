@@ -56,6 +56,12 @@ write.
   slack demotes a gate, while absence of evidence does not promote it to safe.
   When the queue outgrows one screen the board says how many it hid and why,
   because a board that silently drops rows is the surface it replaces.
+- ~~The board surfaces approved resource gates whose delivery check still
+  fails, under their own heading~~ (ADR 0001) — **PROMISED, NOT DELIVERED**.
+  Shipped late: the first build of the board omitted it, which is exactly the
+  gap ADR 0001 wrote the section to close. An approved gate with no delivery
+  check at all is counted in a sentence rather than listed, because a row
+  nothing can ever clear teaches the reader to skip the section.
 - ~~Expiry as an explicit operator action~~ — `janus expire` (M1). Automatic
   expiry still deliberately absent; `horizon` has not yet proven meaningful.
 

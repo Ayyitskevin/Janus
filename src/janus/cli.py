@@ -208,17 +208,31 @@ def cmd_check(a, conn) -> int:
 _DECAY_RANK = {"landed": 0, "unchecked": 1, "unmeasured": 1, "not yet": 2}
 
 
-def _decay_status(g: dict) -> str:
+def _decay_status(conn, g: dict) -> str:
     """What is actually known about this gate's decay — never a guess.
 
     `unmeasured` and `unchecked` are printed rather than left blank on purpose.
     A decay sentence with no re-runnable check is a claim, and a board that
     renders a claim identically to an observation flatters the prose.
     """
-    obs = [o for o in g["observations"] if o["kind"] == "decay"]
-    if obs:                                   # get_gate returns these newest-first
-        return "landed" if obs[0]["exit_code"] == 0 else "not yet"
+    obs = core.latest_observation(conn, g["id"], "decay")
+    if obs:
+        return "landed" if obs["exit_code"] == 0 else "not yet"
     return "unchecked" if g["decay_check"] else "unmeasured"
+
+
+def _delivery_status(conn, g: dict) -> str:
+    """Whether an approved promise has actually landed.
+
+    ADR 0001: "an `approved` resource gate is a promise, not a delivery, and the
+    consumer still has to check that the thing arrived." A ruling closes the
+    DECISION; it does not make a token exist. `unchecked` is therefore a real
+    answer and must not be rendered as delivered.
+    """
+    obs = core.latest_observation(conn, g["id"], "delivery")
+    if obs:
+        return "delivered" if obs["exit_code"] == 0 else "not landed"
+    return "unchecked"
 
 
 def _age(iso: str) -> tuple[int, str]:
@@ -244,52 +258,88 @@ def _clip(text: str, width: int) -> str:
 
 
 def cmd_board(a, conn) -> int:
-    gates = core.list_gates(conn, state="open")
+    seat = core.seat_actor(a.seat)
+
+    def run(gate, kind):
+        try:
+            core.observe(conn, gate["id"], kind, seat)
+        except (JanusError, OSError) as e:
+            print(f"{kind} check failed to run for {gate['id']}: {e}", file=sys.stderr)
+
     if a.check:
         # On demand, never on a timer (M2). An observation records an exit
-        # status; it never changes a gate's state.
-        for g in gates:
+        # status; it never changes a gate's state — which is exactly why it is
+        # safe to run these against gates that are already closed.
+        for g in core.list_gates(conn, state="open"):
             if g["decay_check"]:
-                try:
-                    core.observe(conn, g["id"], "decay", core.seat_actor(a.seat))
-                except (JanusError, OSError) as e:
-                    print(f"decay check failed to run for {g['id']}: {e}", file=sys.stderr)
-        gates = core.list_gates(conn, state="open")
-
-    if not gates:
-        print("Nothing is waiting on a human.")
-        return 0
+                run(g, "decay")
+        for g in core.list_gates(conn, state="approved"):
+            if g["delivery_check"]:
+                run(g, "delivery")
 
     rows = []
-    for g in gates:
+    for g in core.list_gates(conn, state="open"):
         secs, age = _age(g["raised_at"])
-        status = _decay_status(g)
-        rows.append({"g": g, "secs": secs, "age": age, "status": status,
-                     "overdue": _overdue(g)})
+        rows.append({"g": g, "secs": secs, "age": age,
+                     "status": _decay_status(conn, g), "overdue": _overdue(g)})
     rows.sort(key=lambda r: (_DECAY_RANK[r["status"]], 0 if r["overdue"] else 1, -r["secs"]))
+
+    # ADR 0001 promised this section and the first build of the board did not
+    # ship it: "The board surfaces approved resource gates whose delivery check
+    # still fails, under their own heading." An approved gate has left the
+    # decision queue while the thing it promised may never have arrived, and
+    # nothing else in the fleet was watching that gap.
+    promised, unwatched = [], 0
+    for g in core.list_gates(conn, state="approved"):
+        if not g["delivery_check"]:
+            # A resource gate approved without a check cannot ever be shown to
+            # have landed. Counted, not listed: a row nothing can clear would sit
+            # there forever and train the reader to skip the section.
+            unwatched += 1 if g["kind"] == "resource" else 0
+            continue
+        status = _delivery_status(conn, g)
+        if status == "delivered":
+            continue
+        secs, age = _age(g["ruling"]["ruled_at"])
+        promised.append({"g": g, "secs": secs, "age": age, "status": status})
+    promised.sort(key=lambda r: (r["status"] != "not landed", -r["secs"]))
+
+    if not rows and not promised:
+        print("Nothing is waiting on a human." if not unwatched else
+              "No decision is waiting on a human.")
+        if unwatched:
+            print(f"\n  {unwatched} approved resource gate(s) carry no delivery check —"
+                  " nobody can tell whether they landed.")
+        return 0
 
     term = shutil.get_terminal_size(fallback=(100, 24))
     width = min(max(term.columns, 80), 120)
     head = 2 + 10 + 2 + 5 + 2 + 12 + 2 + 12 + 2      # indent + the five columns
     body = width - head
 
-    landed = sum(1 for r in rows if r["status"] == "landed")
-    unmeasured = sum(1 for r in rows if r["status"] in ("unmeasured", "unchecked"))
-    # Longest wait comes from the SECONDS, not the rendered age. Taking max() of
-    # "6m" and "1h" is a string comparison that answers "6m", which is how the
-    # first build of this line shipped a header that contradicted its own rows.
-    longest = max(rows, key=lambda r: r["secs"])["age"]
-    summary = f"{len(rows)} waiting on a human — longest wait {longest}"
-    if landed:
-        summary += f" · {landed} with decay observed to have landed"
-    if unmeasured:
-        summary += f" · {unmeasured} whose decay has never been checked"
+    if rows:
+        landed = sum(1 for r in rows if r["status"] == "landed")
+        unmeasured = sum(1 for r in rows if r["status"] in ("unmeasured", "unchecked"))
+        # Longest wait comes from the SECONDS, not the rendered age. Taking max() of
+        # "6m" and "1h" is a string comparison that answers "6m", which is how the
+        # first build of this line shipped a header that contradicted its own rows.
+        longest = max(rows, key=lambda r: r["secs"])["age"]
+        summary = f"{len(rows)} waiting on a human — longest wait {longest}"
+        if landed:
+            summary += f" · {landed} with decay observed to have landed"
+        if unmeasured:
+            summary += f" · {unmeasured} whose decay has never been checked"
+    else:
+        summary = "No decision is waiting on a human."
     print(summary + "\n")
 
     # One screen or it is wrong (ROADMAP M2). When it does not fit, say so —
-    # a board that silently drops rows is exactly the surface it replaces.
-    per_gate = 2
-    shown = len(rows) if a.all else max((max(term.lines, 12) - 8) // per_gate, 1)
+    # a board that silently drops rows is exactly the surface it replaces. The
+    # two sections share the budget; promises take at most half so a long
+    # decision queue can never hide them entirely, or the reverse.
+    lines = max(term.lines, 12) - 8
+    promised_lines = min(len(promised) * 2 + 2, max(lines // 2, 4)) if promised else 0
+    shown = len(rows) if a.all else max((lines - promised_lines) // 2, 1)
     for r in rows[:shown]:
         g = r["g"]
         age = r["age"] + ("!" if r["overdue"] else "")
@@ -303,10 +353,29 @@ def cmd_board(a, conn) -> int:
         print(f"\n  {hidden} more below the fold. The queue no longer fits one screen,")
         print("  which is the finding, not a display bug. `janus board --all` shows every one.")
 
+    if promised:
+        shown_p = len(promised) if a.all else max((promised_lines - 2) // 2, 1)
+        print(f"\n  PROMISED, NOT DELIVERED — {len(promised)} approved, still waiting to land")
+        for r in promised[:shown_p]:
+            g = r["g"]
+            print(f"  {r['status']:<10}  {r['age']:<5}  {g['id']:<12}  {g['kind']:<12}  "
+                  f"{_clip(g['question'], body)}")
+            print(f"  {'':<10}  {'':<5}  {'':<12}  {'check →':<12}  "
+                  f"{_clip(g['delivery_check'], body)}")
+        hidden_p = len(promised) - shown_p
+        if hidden_p > 0:
+            print(f"\n  {hidden_p} more promise(s) below the fold — `janus board --all`.")
+
+    if unwatched:
+        print(f"\n  {unwatched} approved resource gate(s) carry no delivery check —"
+              " nobody can tell whether they landed.")
+
     print(textwrap.dedent("""
         Sorted by observed decay, then a passed horizon (!), then the longest wait.
         'unmeasured' means the decay sentence carries no re-runnable check — unknown,
         which is not the same as fine. `janus board --check` runs the checks that exist.
+        A ruling closes a decision; it does not make the promised thing exist, so an
+        approved gate stays under PROMISED until its own check says it landed.
         `janus show <id>` for the full question and its options.
         Reading this board is not authority to act.""").rstrip())
     return 0

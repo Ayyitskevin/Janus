@@ -478,3 +478,107 @@ def test_doctor_still_reports_drift_on_a_gate_a_human_ruled_on(tmp_path):
              "HOME": str(tmp_path), "USER": "tester"},
     )
     assert g in r.stdout and "approved" in r.stdout, r.stdout
+
+
+# -------------------------------------------------- board: promised/delivered ---
+def test_an_approved_promise_that_has_not_landed_gets_its_own_heading(tmp_path):
+    """ADR 0001: an approved resource gate is a promise, not a delivery.
+
+    The decision has left the queue while the thing it promised may never have
+    arrived, and until this section existed nothing in the fleet watched that gap.
+    """
+    db = tmp_path / "b.db"
+    conn = core.connect(db)
+    landed_file = tmp_path / "arrived.env"
+    landed_file.write_text("token")
+
+    waiting = _gate(conn, question="Mint the Athena admin token", kind="resource",
+                    delivery_check=f"test -f {tmp_path / 'never.env'}")
+    arrived = _gate(conn, question="Buy the NAS drives", kind="resource",
+                    delivery_check=f"test -f {landed_file}")
+    for g in (waiting, arrived):
+        core.close_gate(conn, g, state="approved", reason="yes", actor="kevin")
+    core.observe(conn, waiting, "delivery", "tester")
+    core.observe(conn, arrived, "delivery", "tester")
+
+    out = _board(db)
+    assert "PROMISED, NOT DELIVERED" in out
+    assert waiting in out, out
+    assert arrived not in out, "a promise that landed must drop off the board"
+
+
+def test_an_unrun_delivery_check_never_reads_as_delivered(tmp_path):
+    db = tmp_path / "b.db"
+    conn = core.connect(db)
+    g = _gate(conn, kind="resource", delivery_check="true")
+    core.close_gate(conn, g, state="approved", reason="yes", actor="kevin")
+
+    out = _board(db)
+    assert g in out and "unchecked" in out, out
+
+
+def test_a_refused_gate_is_never_a_promise(tmp_path):
+    """"I won't" is not a promise; it must not sit in the delivery queue."""
+    db = tmp_path / "b.db"
+    conn = core.connect(db)
+    g = _gate(conn, kind="resource", delivery_check="false")
+    core.close_gate(conn, g, state="refused", reason="not buying it", actor="kevin")
+
+    out = _board(db)
+    assert g not in out and "PROMISED" not in out, out
+
+
+def test_an_approved_resource_gate_with_no_check_is_counted_not_listed(tmp_path):
+    """A row nothing can ever clear would train the reader to skip the section.
+
+    It cannot be shown to have landed and it cannot be shown not to have, so it
+    is counted in a sentence instead of parked in the list forever — but it is
+    never silently dropped, because unknown is not the same as fine.
+    """
+    db = tmp_path / "b.db"
+    conn = core.connect(db)
+    g = _gate(conn, kind="resource")            # no delivery_check
+    core.close_gate(conn, g, state="approved", reason="yes", actor="kevin")
+
+    out = _board(db)
+    assert "1 approved resource gate(s) carry no delivery check" in out
+    assert g not in out, "it must be counted, not listed as a clearable row"
+
+
+def test_board_check_runs_delivery_checks_on_approved_gates(tmp_path):
+    db = tmp_path / "b.db"
+    conn = core.connect(db)
+    g = _gate(conn, kind="resource", delivery_check="true")
+    core.close_gate(conn, g, state="approved", reason="yes", actor="kevin")
+    assert conn.execute("SELECT COUNT(*) c FROM observations").fetchone()["c"] == 0
+
+    _board(db, "--check")
+
+    fresh = core.connect(db)
+    obs = fresh.execute(
+        "SELECT * FROM observations WHERE kind = 'delivery'").fetchall()
+    assert len(obs) == 1, "the delivery check did not run — this would pass vacuously"
+    assert obs[0]["exit_code"] == 0
+    assert core.get_gate(fresh, g)["state"] == "approved"
+
+
+def test_a_delivery_verdict_survives_being_pushed_past_the_observation_limit(tmp_path):
+    """`get_gate` attaches only the last five observations, of any kind.
+
+    Six decay checks push an older delivery result out of that window, and a
+    status derived from the attached list would then report a promise that HAS
+    landed as never checked — putting a delivered gate back on the board. The
+    verdict comes from a query that cannot be truncated instead.
+    """
+    db = tmp_path / "b.db"
+    conn = core.connect(db)
+    g = _gate(conn, kind="resource", decay_check="true", delivery_check="true")
+    core.close_gate(conn, g, state="approved", reason="yes", actor="kevin")
+    core.observe(conn, g, "delivery", "tester")          # it landed
+    for _ in range(6):
+        core.observe(conn, g, "decay", "tester")         # ...then buried
+
+    assert all(o["kind"] == "decay" for o in core.get_gate(conn, g)["observations"]), \
+        "the delivery row is still inside the window — this test would pass vacuously"
+    assert core.latest_observation(conn, g, "delivery")["exit_code"] == 0
+    assert g not in _board(db), "a delivered promise came back onto the board"

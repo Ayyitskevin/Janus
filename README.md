@@ -26,6 +26,13 @@ been run, which outranks one measured to still have time. A gate whose decay
 sentence carries no re-runnable check is printed as `unmeasured`, because
 unknown is not the same as fine. `janus list` remains the plain enumeration.
 
+Under its own heading the board also carries **PROMISED, NOT DELIVERED**: gates a
+human already approved whose `--delivery-check` has not yet succeeded. A ruling
+closes a *decision*; it does not make a credential exist. Those gates have left
+the decision queue while the thing they promised may never have arrived, and
+nothing else was watching that gap. A promise drops off the moment its own check
+passes.
+
 Four fields are mandatory and the schema refuses a gate without them. Bind the
 bytes with `--bind-kind file|git|text --bind <locator>`; offer alternatives with
 repeatable `--option id:label[:detail]`, marking your recommendation with a
