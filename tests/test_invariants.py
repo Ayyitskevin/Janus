@@ -302,3 +302,33 @@ def test_the_board_states_that_reading_it_is_not_authority(tmp_path):
     conn = core.connect(db)
     _gate(conn)
     assert "not authority to act" in _board(db)
+
+
+def test_the_board_header_cannot_contradict_its_own_rows(tmp_path):
+    """"longest wait" is computed from seconds, not from the rendered age.
+
+    max("6m", "1h") is a string comparison answering "6m", so the header claimed
+    a shorter longest-wait than a row it was printed above. Both gates are
+    inserted with controlled timestamps because the bug only shows when the
+    minutes value sorts above the hours value as text.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    db = tmp_path / "b.db"
+    conn = core.connect(db)
+
+    def at(minutes_ago: int, gid: str):
+        stamp = (datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
+                 ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        conn.execute(
+            "INSERT INTO gates (id, raised_at, raised_by, question, kind, decay,"
+            " consumer) VALUES (?,?,?,?,?,?,?)",
+            (gid, stamp, "tester", f"raised {minutes_ago}m ago", "taste",
+             "momentum", "tester: acts"))
+
+    at(6, "gsixminutes0")
+    at(60, "gonehour0000")
+    conn.commit()
+
+    out = _board(db)
+    assert "longest wait 1h" in out, out.splitlines()[0]

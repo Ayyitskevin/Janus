@@ -275,7 +275,11 @@ def cmd_board(a, conn) -> int:
 
     landed = sum(1 for r in rows if r["status"] == "landed")
     unmeasured = sum(1 for r in rows if r["status"] in ("unmeasured", "unchecked"))
-    summary = f"{len(rows)} waiting on a human — longest wait {max(r['age'] for r in rows)}"
+    # Longest wait comes from the SECONDS, not the rendered age. Taking max() of
+    # "6m" and "1h" is a string comparison that answers "6m", which is how the
+    # first build of this line shipped a header that contradicted its own rows.
+    longest = max(rows, key=lambda r: r["secs"])["age"]
+    summary = f"{len(rows)} waiting on a human — longest wait {longest}"
     if landed:
         summary += f" · {landed} with decay observed to have landed"
     if unmeasured:
