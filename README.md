@@ -114,6 +114,26 @@ insistent.
   it again.
 - **It never edits a ruling.** A reversal is a new gate that cites the old one.
 
+## Installing it where a fleet will use it
+
+Install a **copy**, not the working tree:
+
+```bash
+python3 -m venv ~/.local/share/janus/venv
+~/.local/share/janus/venv/bin/pip install /path/to/janus     # note: no -e
+```
+
+and put a wrapper on `PATH` that execs that venv's `janus`. Publishing a change
+is then a deliberate act rather than a side effect of editing.
+
+This is worth the extra step. An editable install (`pip install -e`) makes the
+checkout itself the program, so on a machine where several agents share one
+clone, a `git switch` during a review — or a half-saved edit — silently changes
+the binary every other agent is running. That is not hypothetical: it happened
+here, a reviewer reported failures nobody else could reproduce, and a missing
+import took the whole fleet's CLI down mid-edit. `janus doctor` reports which of
+the two you are running, and names the branch when it is a working tree.
+
 ## Status
 
 M0 (the contract) and M1 (the ledger, the CLI, and adoption) shipped 2026-08-24.
