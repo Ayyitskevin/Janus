@@ -104,7 +104,14 @@ def resolve_binding(kind: str | None, locator: str | None) -> Binding | None:
     if kind is None or locator is None:
         raise JanusError("a binding needs both --bind-kind and --bind (or neither)")
     if kind == "file":
-        return Binding(kind, str(Path(locator).expanduser()), digest_file(locator))
+        # ABSOLUTE, resolved at raise time. A relative locator is meaningless to
+        # every reader but the one process that raised the gate: the first gate
+        # raised by another seat (2026-08-24) bound "docs/adr/0054-....md" and
+        # reads CANNOT VERIFY to anyone whose cwd differs. A binding exists to be
+        # re-checked by someone else later, so it must not depend on where the
+        # raiser happened to be standing.
+        return Binding(kind, str(Path(locator).expanduser().resolve()),
+                       digest_file(locator))
     if kind == "git":
         if "@" not in locator:
             raise JanusError("git binding locator must be '<repo>@<rev>'")

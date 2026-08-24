@@ -197,3 +197,22 @@ def test_doctor_exits_zero_on_a_healthy_ledger(tmp_path):
     assert r.returncode == 0, r.stderr
     assert "append-only enforced (UPDATE" in r.stdout
     assert "append-only enforced (DELETE" in r.stdout
+
+
+def test_a_file_binding_is_stored_absolute(conn, tmp_path, monkeypatch):
+    """A relative locator is meaningless to every reader but the raiser.
+
+    Found by real adoption: the first gate another seat raised bound
+    "docs/adr/0054-....md" and reads CANNOT VERIFY to anyone whose cwd differs.
+    A binding exists so someone ELSE can re-check it later.
+    """
+    art = tmp_path / "sub" / "a.txt"
+    art.parent.mkdir()
+    art.write_text("x")
+    monkeypatch.chdir(tmp_path)
+    b = core.resolve_binding("file", "sub/a.txt")
+    assert Path(b.locator).is_absolute(), b.locator
+    # And it must still verify from a different working directory.
+    monkeypatch.chdir(art.parent)
+    ok, _ = core.verify_binding("file", b.locator, b.sha256)
+    assert ok is True
