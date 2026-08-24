@@ -136,6 +136,36 @@ Four values covered all twelve with nothing left over and nothing forced. No
 that fits none of these is evidence the enum is wrong, and that is a finding to
 raise, not a value to add casually.
 
+#### Stated limitation: this enum has never been tested out of sample
+
+Recorded 2026-08-24 after the M0 non-author review (codex; full text in
+`shared/handoffs/2026-08-24_janus-m0-pr1-review-codex.md`), which returned HOLD
+on exactly this claim. The objection is accepted as accurate and is written down
+here rather than acted on. Kevin's call, same day.
+
+The evidence for "four values cover the space" is circular in a way worth being
+blunt about: twelve items, from one session, raised by one operator, and three
+of the twelve are Janus's own design questions. `resource` rests on a single
+example — gate #2 — which this ADR elsewhere argues is not a decision at all.
+"Nothing was forced" is what a well-fitted model and an overfitted one both look
+like from inside the training set.
+
+The review offered a candidate counterexample: an epistemic or
+evidence-sufficiency gate, such as whether conflicting measurements justify
+declaring a safety claim established. Its argument is that `taste` can only
+absorb this by becoming a catch-all and `authority` only by making the boundary
+non-operational. That specific case is arguable — "only the owner may declare
+this established" reads as `authority` without much strain — but the structural
+point does not depend on the example landing, and the structural point stands.
+
+What was decided, and why it is not "we disagree": the enum stays at four
+because no real gate has yet failed to classify. The trigger for revisiting is
+an observed failure, not a further argument — the first gate a seat cannot honestly
+place in one of the four is the finding, and per the paragraph above it should be
+raised as such rather than forced. That trigger is cheaper and more honest than
+guessing at a fifth value now, and it is deliberately falsifiable: if this enum
+is wrong, using it is what will show that.
+
 ### Multi-option gates: YES, and they are the majority
 
 Six of twelve gates present two or three named alternatives with costed
