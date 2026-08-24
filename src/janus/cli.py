@@ -243,7 +243,14 @@ def cmd_check(a, conn) -> int:
 # of evidence does not promote. "not yet" is the only row with a measurement
 # saying there is time; unmeasured is unknown, and unknown is not the same as
 # fine — so it sorts above the gate that proved it can wait.
-_DECAY_RANK = {"landed": 0, "unchecked": 1, "unmeasured": 1, "not yet": 2}
+_DECAY_RANK = {"landed": 0, "broken": 1, "unchecked": 1, "unmeasured": 1, "not yet": 2}
+
+# A check that timed out or could not be found did not measure anything. Both
+# would otherwise land in "not yet", the ONE tier that means "measured, and
+# there is still slack" — turning a broken check into evidence of safety, which
+# is the most expensive possible way to be wrong here. 127 is the shell's
+# "command not found"; 124 is core.TIMEOUT_EXIT.
+_BROKEN_EXITS = (core.TIMEOUT_EXIT, 127)
 
 
 def _decay_status(conn, g: dict) -> str:
@@ -255,7 +262,9 @@ def _decay_status(conn, g: dict) -> str:
     """
     obs = core.latest_observation(conn, g["id"], "decay")
     if obs:
-        return "landed" if obs["exit_code"] == 0 else "not yet"
+        if obs["exit_code"] == 0:
+            return "landed"
+        return "broken" if obs["exit_code"] in _BROKEN_EXITS else "not yet"
     return "unchecked" if g["decay_check"] else "unmeasured"
 
 
@@ -269,7 +278,9 @@ def _delivery_status(conn, g: dict) -> str:
     """
     obs = core.latest_observation(conn, g["id"], "delivery")
     if obs:
-        return "delivered" if obs["exit_code"] == 0 else "not landed"
+        if obs["exit_code"] == 0:
+            return "delivered"
+        return "broken" if obs["exit_code"] in _BROKEN_EXITS else "not landed"
     return "unchecked"
 
 
@@ -308,12 +319,38 @@ def cmd_board(a, conn) -> int:
         # On demand, never on a timer (M2). An observation records an exit
         # status; it never changes a gate's state — which is exactly why it is
         # safe to run these against gates that are already closed.
-        for g in core.list_gates(conn, state="open"):
-            if g["decay_check"]:
-                run(g, "decay")
-        for g in core.list_gates(conn, state="approved"):
-            if g["delivery_check"]:
-                run(g, "delivery")
+        #
+        # THREAT_MODEL: "A gate that ships a `check` ships executable text...
+        # Checks must never run automatically on write, never run as part of
+        # listing gates, and must be visible in full before they are invoked."
+        # The first build of this flag broke the third clause: it ran every
+        # stored command without the operator ever seeing one. They are printed
+        # in full first now, and a non-interactive caller must pass --yes, so
+        # nothing here executes text nobody chose to run.
+        pending = [(g, "decay") for g in core.list_gates(conn, state="open")
+                   if g["decay_check"]]
+        pending += [(g, "delivery") for g in core.list_gates(conn, state="approved")
+                    if g["delivery_check"]]
+        if not pending:
+            print("no checks to run — no open gate carries one.\n")
+        else:
+            print(f"about to run {len(pending)} command(s) stored in the ledger:")
+            for g, kind in pending:
+                print(f"  {g['id']}  {kind:<8}  "
+                      f"{g['decay_check'] if kind == 'decay' else g['delivery_check']}")
+            if not a.yes:
+                if not sys.stdin.isatty():
+                    raise JanusError(
+                        "refusing to run stored commands unattended. Re-run with --yes "
+                        "once you have read the list above; a gate's check is text "
+                        "someone else wrote."
+                    )
+                if input("run them? [y/N] ").strip().lower() not in ("y", "yes"):
+                    print("nothing run.")
+                    return 0
+            print()
+            for g, kind in pending:
+                run(g, kind)
 
     rows = []
     for g in core.list_gates(conn, state="open"):
@@ -724,6 +761,8 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--check", action="store_true",
                    help="run every decay check first (on demand; observations only)")
     b.add_argument("--all", action="store_true", help="show every gate, past the one-screen fold")
+    b.add_argument("--yes", action="store_true",
+                   help="with --check: run the listed commands without confirming")
     b.set_defaults(fn=cmd_board)
 
     st = sub.add_parser("stats", help="the dated scorecard: is anyone actually using this")

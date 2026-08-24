@@ -383,7 +383,14 @@ def list_gates(conn: sqlite3.Connection, *, state: str = "open") -> list[dict]:
     return [get_gate(conn, r["id"]) for r in rows]
 
 
-def observe(conn: sqlite3.Connection, gate_id: str, kind: str, actor: str) -> dict:
+# The shell's own convention for a command killed by `timeout(1)`. Borrowed
+# rather than invented so the number means the same thing to anyone reading the
+# ledger with no Janus knowledge.
+TIMEOUT_EXIT = 124
+
+
+def observe(conn: sqlite3.Connection, gate_id: str, kind: str, actor: str,
+            timeout: int = 120) -> dict:
     """Run a decay or delivery check. An observation NEVER changes state."""
     gate = get_gate(conn, gate_id)
     if gate is None:
@@ -391,13 +398,23 @@ def observe(conn: sqlite3.Connection, gate_id: str, kind: str, actor: str) -> di
     cmd = gate["decay_check"] if kind == "decay" else gate["delivery_check"]
     if not cmd:
         raise JanusError(f"gate {gate_id} carries no {kind} check")
-    p = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
+    # A check that hangs is a FACT ABOUT THE CHECK and gets recorded as one.
+    # Letting TimeoutExpired escape did two bad things: it crashed the caller
+    # (it is not an OSError, so the handlers around this did not catch it), and
+    # it wrote nothing — leaving a hung check indistinguishable from one that
+    # was never run. Unknown must never be reachable by accident.
+    try:
+        p = subprocess.run(cmd, shell=True, capture_output=True, text=True,
+                           timeout=timeout)
+        code, note = p.returncode, (p.stdout or p.stderr)[:200]
+    except subprocess.TimeoutExpired:
+        code = TIMEOUT_EXIT
+        note = f"no result in {timeout}s — the check was killed, not answered"
     conn.execute(
         "INSERT INTO observations (gate_id, at, kind, command, exit_code, note)"
         " VALUES (?,?,?,?,?,?)",
-        (gate_id, now(), kind, cmd, p.returncode, (p.stdout or p.stderr)[:200]),
+        (gate_id, now(), kind, cmd, code, note),
     )
-    audit(conn, actor, f"observe:{kind}", gate_id, f"exit={p.returncode}")
+    audit(conn, actor, f"observe:{kind}", gate_id, f"exit={code}")
     conn.commit()
-    return {"kind": kind, "command": cmd, "exit_code": p.returncode,
-            "output": (p.stdout or p.stderr)[:200]}
+    return {"kind": kind, "command": cmd, "exit_code": code, "output": note}

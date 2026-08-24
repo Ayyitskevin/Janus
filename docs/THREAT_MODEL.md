@@ -38,6 +38,24 @@ operator or process runs. Checks must never run automatically on write, never
 run as part of listing gates, and must be visible in full before they are
 invoked. On-demand only, by explicit act.
 
+*How this is honoured, and where it was broken.* `janus check <id>` runs one
+check against one gate. `janus board --check` runs every stored check at once —
+and its first build ran them without the operator seeing a single command,
+breaking the third clause above within a day of the clause being written. It now
+prints every command in full first, and a non-interactive caller must pass
+`--yes`, so nothing executes text nobody chose to run. A check that hangs is
+killed and recorded as exit `124` rather than escaping as an exception, because
+an unrecorded check is indistinguishable from one never run.
+
+*Where this becomes remote code execution.* Everything above holds only while a
+gate can be written solely by a process already running as this user — writing a
+gate is already equivalent to running a command as them, so a check adds no
+privilege. **M3 must not change that.** A read-only HTTP surface is safe; the
+moment any remote or lower-trust caller can *write* a gate, its `check` field is
+an arbitrary command that a later `--check` will run as this user. If ingest is
+ever built, checks from a remote origin must be refused at write time, not
+filtered at run time.
+
 ## Failure modes that matter more than attackers
 
 **A queue that lies.** The corpus finding: a gate whose subject already shipped

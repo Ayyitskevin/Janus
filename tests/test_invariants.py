@@ -381,7 +381,7 @@ def test_board_check_records_observations_without_changing_state(tmp_path):
     before = conn.execute("SELECT COUNT(*) c FROM observations").fetchone()["c"]
     assert before == 0
 
-    _board(db, "--check")
+    _board(db, "--check", "--yes")
 
     fresh = core.connect(db)
     after = fresh.execute("SELECT COUNT(*) c FROM observations").fetchone()["c"]
@@ -553,7 +553,7 @@ def test_board_check_runs_delivery_checks_on_approved_gates(tmp_path):
     core.close_gate(conn, g, state="approved", reason="yes", actor="kevin")
     assert conn.execute("SELECT COUNT(*) c FROM observations").fetchone()["c"] == 0
 
-    _board(db, "--check")
+    _board(db, "--check", "--yes")
 
     fresh = core.connect(db)
     obs = fresh.execute(
@@ -806,3 +806,121 @@ def test_a_resource_gate_without_a_delivery_check_is_told_it_cannot_be_tracked(t
                                              "--delivery-check", "true")
     # Only resource gates promise a thing; the others must not be nagged.
     assert "no delivery check" not in _raise(tmp_path, "--kind", "taste")
+
+
+# ------------------------------------- stored checks are executable text ------
+def test_board_check_refuses_to_run_stored_commands_unattended(tmp_path):
+    """THREAT_MODEL: a check "must be visible in full before it is invoked".
+
+    A gate's check is text someone else wrote. The first build of --check ran
+    every stored command without the operator seeing one, which broke the rule
+    the threat model set before the code existed.
+    """
+    db = tmp_path / "b.db"
+    conn = core.connect(db)
+    _gate(conn, decay_check="touch " + str(tmp_path / "SHOULD_NOT_EXIST"))
+
+    r = subprocess.run(
+        [sys.executable, "-m", "janus.cli", "--db", str(db), "board", "--check"],
+        capture_output=True, text=True, stdin=subprocess.DEVNULL,
+        env={"PATH": "/usr/bin:/bin",
+             "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
+             "HOME": str(tmp_path), "USER": "tester", "COLUMNS": "110", "LINES": "40"},
+    )
+    assert r.returncode != 0, r.stdout
+    assert not (tmp_path / "SHOULD_NOT_EXIST").exists(), "it ran the command anyway"
+    assert conn.execute("SELECT COUNT(*) c FROM observations").fetchone()["c"] == 0
+
+
+def test_board_check_prints_each_command_before_running_it(tmp_path):
+    db = tmp_path / "b.db"
+    conn = core.connect(db)
+    _gate(conn, decay_check="true # a distinctive marker")
+    out = _board(db, "--check", "--yes")
+    assert "about to run 1 command(s)" in out
+    assert "a distinctive marker" in out, "the command was run without being shown"
+
+
+def test_a_check_that_hangs_is_recorded_not_raised(tmp_path):
+    """`TimeoutExpired` is not an `OSError`, so the handlers around observe()
+    never caught it: a hanging check crashed the caller AND wrote nothing,
+    leaving it indistinguishable from a check that was never run.
+    """
+    conn = core.connect(tmp_path / "h.db")
+    g = _gate(conn, decay_check="sleep 5")
+    result = core.observe(conn, g, "decay", "tester", timeout=1)
+    assert result["exit_code"] == core.TIMEOUT_EXIT
+    assert "killed, not answered" in result["output"]
+    row = core.latest_observation(conn, g, "decay")
+    assert row is not None and row["exit_code"] == core.TIMEOUT_EXIT
+
+
+def test_a_broken_check_is_never_read_as_evidence_of_slack(tmp_path):
+    """"not yet" is the one status meaning MEASURED, and there is time.
+
+    A check that timed out or does not exist measured nothing. Ranking it as
+    slack turns a broken check into evidence of safety, which is the most
+    expensive way to be wrong on this board.
+    """
+    db = tmp_path / "b.db"
+    conn = core.connect(db)
+    missing = _gate(conn, question="check does not exist",
+                    decay_check="janus-no-such-command-xyz")
+    real = _gate(conn, question="check ran and there is time", decay_check="false")
+    core.observe(conn, missing, "decay", "tester")
+    core.observe(conn, real, "decay", "tester")
+    assert core.latest_observation(conn, missing, "decay")["exit_code"] == 127
+
+    out = _board(db)
+    assert "broken" in out
+    # and it must outrank the gate that proved it can wait
+    assert out.index(missing) < out.index(real), out
+
+
+# ---------------------------- the drift guard, which nothing was testing ------
+def _cli(db: Path, *argv):
+    return subprocess.run(
+        [sys.executable, "-m", "janus.cli", "--db", str(db), *argv],
+        capture_output=True, text=True, stdin=subprocess.DEVNULL,
+        env={"PATH": "/usr/bin:/bin",
+             "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
+             "HOME": str(db.parent), "USER": "tester"},
+    )
+
+
+def test_decide_refuses_to_rule_on_drifted_bytes_without_yes(tmp_path):
+    """README and the skill both advertise this, and nothing covered it.
+
+    Found by a mutation aimed somewhere else: disabling this guard left all 57
+    tests green. It is the enforcement point of invariant 2 — a ruling approves
+    the bytes in front of the human, not whatever the name points at later.
+    """
+    db = tmp_path / "d.db"
+    conn = core.connect(db)
+    art = tmp_path / "artifact.txt"
+    art.write_text("what the human read")
+    g = _gate(conn, binding=core.resolve_binding("file", str(art)))
+    art.write_text("something else entirely")
+
+    r = _cli(db, "decide", g, "--approve", "--reason", "looks fine")
+    assert r.returncode != 0, r.stdout
+    assert "drifted" in (r.stdout + r.stderr).lower()
+    assert core.get_gate(core.connect(db), g)["state"] == "open", \
+        "it ruled anyway — the gate is closed"
+
+
+def test_decide_still_rules_on_drifted_bytes_when_told_to(tmp_path):
+    """The guard is a speed bump for a human, not a lock. Janus never enforces."""
+    db = tmp_path / "d.db"
+    conn = core.connect(db)
+    art = tmp_path / "artifact.txt"
+    art.write_text("v1")
+    g = _gate(conn, binding=core.resolve_binding("file", str(art)))
+    art.write_text("v2")
+
+    r = _cli(db, "decide", g, "--approve", "--reason", "I re-read it", "--yes")
+    assert r.returncode == 0, r.stderr
+    gate = core.get_gate(core.connect(db), g)
+    assert gate["state"] == "approved"
+    # and it records the bytes actually ruled on, not the ones raised against
+    assert gate["ruling"]["bound_sha256"] == core.digest_file(art)
