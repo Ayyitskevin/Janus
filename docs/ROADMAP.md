@@ -15,9 +15,11 @@ deliberately unavailable. Nothing here authorizes a cross-module seam.
   required and are the majority shape; `horizon` is optional. The corpus also
   forced a fifth terminal state, `superseded`, and admitted resource requests
   that are not decisions.
-- Threat model sketch: Janus holds decision *metadata*, which can be sensitive
-  even when the artifact is not — a gate title can leak an incident before it
-  is public.
+- ~~Threat model sketch~~ **done 2026-08-24** — `docs/THREAT_MODEL.md`. The
+  sharpest risk is not a breach: a gate title can leak an incident, a
+  negotiation, or a person in the one surface designed to be scanned quickly.
+  The catastrophic failure is a future version that decides on the operator's
+  behalf.
 
 **Exit:** a non-author seat reviews the model and the non-goals.
 

@@ -176,10 +176,59 @@ which deliberately leaves a gap between the ruling and the effect. That gap is
 real and must not be hidden: an `approved` resource gate is a promise, not a
 delivery, and the consumer still has to check that the thing arrived.
 
-## Still genuinely open
+## The last two, resolved 2026-08-24
 
-- Whether `superseded` needs to name the superseding artifact by digest, the way
-  a ruling does, or whether free text is honest enough for something observed
-  after the fact.
-- Whether a resource gate should carry an explicit `delivered` observation
-  distinct from its ruling, or whether that is the consumer's business.
+### `superseded` takes an OPTIONAL binding and a REQUIRED reason
+
+A ruling's digest is a **security** control: it stops an authorization drifting
+onto different bytes. A supersession authorizes nothing, so copying the digest
+requirement there would be cargo-culting the pattern rather than reusing it.
+
+It also would not buy what it appears to. A digest proves *what* overtook the
+gate, never *that* it did — anyone closing a gate wrongly can attach a perfectly
+valid digest of an unrelated artifact. The real protection is that supersession
+is attributed and append-only, so a wrong close is visible and answerable, and
+re-raising is cheap.
+
+So: `reason` is required, and an optional `binding` records the overtaking
+artifact where one exists — a merge commit, a released tag. Required where
+available in spirit, unenforceable in schema, and deliberately not a gate on
+recording the truth. The honest case is a person noticing something already
+shipped; they have a fact, not always a digest. A model that makes the honest
+path harder than the careless one gets the careless one.
+
+`superseded` is the only terminal state settable by someone who is neither the
+raiser nor the ruler, which is exactly why it carries the strictest attribution
+and the loosest binding.
+
+### A resource gate needs a delivery check, not a new state
+
+The corpus case is live and still unresolved as this is written. Gate #2 asked
+the operator to mint a credential. The operator agreed — and the file still does
+not exist, so three downstream artifacts remain blocked. A model that closes the
+gate at `approved` would show it done while the consumer is still stuck. That is
+the same lie as a stale open gate, merely inverted, and it is the more dangerous
+direction because it looks like progress.
+
+Rejected: keeping the gate open until delivery. That conflates the decision with
+the act and destroys a genuinely useful distinction — "agreed, not yet done" is
+not the same condition as "not yet decided", and an operator needs to tell them
+apart.
+
+Rejected: treating it as the consumer's business. Today proves it is not. The
+consumer had no way to signal that an approved gate had not landed.
+
+Resolved: a gate may carry an optional `delivery.check` — a command whose exit
+status reports whether the promised thing now exists. The ruling still closes
+the decision, so the invariant holds: state stays single-valued and terminal
+states stay terminal. The **board** surfaces approved resource gates whose
+delivery check still fails, under their own heading.
+
+Delivery is simply decay pointed the other way. Decay asks what worsens while a
+gate waits; delivery asks whether a promise has landed. Both are on-demand
+observations that never change state, so this adds a field and a board section,
+not a concept.
+
+Today's gate #2 would read: `approved`, with
+`delivery.check: test -f ~/.claude/athena.env`, and the board would show it as
+promised-not-delivered — which is precisely the true state of it right now.

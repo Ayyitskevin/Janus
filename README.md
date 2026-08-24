@@ -43,6 +43,7 @@ One decision, raised by one agent, that only a human can make.
 | `decay` | What becomes untrue or more expensive while this waits — with a re-runnable check |
 | `consumer` | Who acts on the answer, and what they will do |
 | `options` | Optional named alternatives; empty means approve/refuse. Six of twelve real gates needed these |
+| `delivery` | Optional check that a promised thing actually landed — for `resource` gates, an approval is a promise, not a delivery |
 | `state` | `open` · `approved` · `refused` · `expired` · `withdrawn` · `superseded` |
 
 Two fields carry most of the weight.
