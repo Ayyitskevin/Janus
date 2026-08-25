@@ -108,7 +108,8 @@ def test_janus_exposes_no_authorization_verb():
 
 
 # ------------------------------------- append-only is real, not documented --
-@pytest.mark.parametrize("table", ["gates", "rulings", "audit_events", "observations"])
+@pytest.mark.parametrize(
+    "table", ["gates", "rulings", "audit_events", "observations", "check_revisions"])
 def test_update_and_delete_are_refused_on_real_rows(conn, table):
     g = _gate(conn)
     core.close_gate(conn, g, state="approved", reason="ok", actor="kevin")
@@ -116,6 +117,7 @@ def test_update_and_delete_are_refused_on_real_rows(conn, table):
     conn.execute(
         "INSERT INTO observations (gate_id, at, kind, command, exit_code)"
         " VALUES (?,?,?,?,?)", (g, core.now(), "decay", "true", 0))
+    core.revise_check(conn, g, "decay", "true", "tester", "the old one read an env var")
     conn.commit()
     rows = conn.execute(f"SELECT COUNT(*) c FROM {table}").fetchone()["c"]
     assert rows > 0, f"{table} is empty — this test would pass vacuously"
@@ -924,3 +926,134 @@ def test_decide_still_rules_on_drifted_bytes_when_told_to(tmp_path):
     assert gate["state"] == "approved"
     # and it records the bytes actually ruled on, not the ones raised against
     assert gate["ruling"]["bound_sha256"] == core.digest_file(art)
+
+
+# ------------------------------------------- a check can be corrected (0002) ---
+def test_a_revision_replaces_the_effective_check_without_touching_the_original(conn):
+    g = _gate(conn, decay_check="test -n \"$SOME_AMBIENT_VAR\"")
+    core.revise_check(conn, g, "decay", "test -s /etc/hostname", "tester",
+                      "the old check read the environment of whoever ran the board, "
+                      "not any durable fact")
+    gate = core.get_gate(conn, g)
+    assert gate["effective_decay_check"] == "test -s /etc/hostname"
+    assert gate["decay_check"] == "test -n \"$SOME_AMBIENT_VAR\"", \
+        "the original was rewritten — this is an edit, not a revision"
+    assert len(gate["check_revisions"]) == 1
+    assert gate["check_revisions"][0]["revised_by"] == "tester"
+
+
+def test_observe_runs_the_revised_check_not_the_original(conn):
+    """If `observe` kept reading the raw field the whole fix would be cosmetic."""
+    g = _gate(conn, decay_check="false")
+    assert core.observe(conn, g, "decay", "tester")["exit_code"] != 0
+    core.revise_check(conn, g, "decay", "true", "tester",
+                      "the original could never pass")
+    assert core.observe(conn, g, "decay", "tester")["exit_code"] == 0
+
+
+def test_a_check_can_be_corrected_on_a_gate_that_is_already_closed(conn):
+    """The case that forced this: an APPROVED resource gate whose delivery check
+    could never pass, so the board reported a delivered promise as outstanding
+    forever. Correcting it must not require the gate to be open."""
+    g = _gate(conn, kind="resource", delivery_check="test -n \"$NEVER_SET_HERE\"")
+    core.close_gate(conn, g, state="approved", reason="yes", actor="kevin")
+    core.revise_check(conn, g, "delivery", "true", "tester",
+                      "measured the ambient environment, not whether it landed")
+    gate = core.get_gate(conn, g)
+    assert gate["state"] == "approved", "a revision changed the gate's state"
+    assert gate["ruling"]["reason"] == "yes", "a revision touched the ruling"
+    assert gate["effective_delivery_check"] == "true"
+
+
+def test_a_revision_demands_a_reason(conn):
+    g = _gate(conn, decay_check="false")
+    with pytest.raises(JanusError, match="reason"):
+        core.revise_check(conn, g, "decay", "true", "tester", "   ")
+
+
+def test_a_gate_with_no_check_can_gain_one(conn):
+    g = _gate(conn)
+    assert core.get_gate(conn, g)["effective_decay_check"] is None
+    core.revise_check(conn, g, "decay", "true", "tester", "it never had one to begin with")
+    assert core.get_gate(conn, g)["effective_decay_check"] == "true"
+
+
+def test_correcting_a_check_clears_a_delivered_promise_off_the_board(tmp_path):
+    """End to end, on the exact shape that forced migration 0002.
+
+    An approved resource gate whose delivery check can never pass sits under
+    PROMISED, NOT DELIVERED forever while the thing IS delivered. A board that
+    lies once stops being read.
+    """
+    db = tmp_path / "b.db"
+    conn = core.connect(db)
+    landed = tmp_path / "token"
+    landed.write_text("delivered")
+    g = _gate(conn, kind="resource", question="did the credential arrive?",
+              delivery_check="test -n \"$NOT_SET_ANYWHERE\"")
+    core.close_gate(conn, g, state="approved", reason="yes", actor="kevin")
+
+    before = _board(db, "--check", "--yes")
+    assert "PROMISED, NOT DELIVERED" in before and g in before
+
+    core.revise_check(conn, g, "delivery", f"test -s {landed}", "tester",
+                      "the original measured the ambient environment of whoever "
+                      "ran the board, not whether the file exists")
+
+    after = _board(db, "--check", "--yes")
+    # NB: the gate id still appears in --check's "about to run" preamble, which
+    # is the threat-model requirement that commands be visible before they run.
+    # What must be gone is the gate's ROW under the heading.
+    assert "PROMISED, NOT DELIVERED" not in after, after
+    promised_section = after.split("PROMISED, NOT DELIVERED")[1:]
+    assert not promised_section
+    assert core.latest_observation(core.connect(db), g, "delivery")["exit_code"] == 0
+
+
+def test_a_gate_that_gains_a_delivery_check_stops_being_counted_as_unwatchable(tmp_path):
+    """An approved gate with no check is COUNTED, not listed — a row nothing can
+    clear would sit there forever. Giving it a check by revision must move it
+    into the tracked list, or the revision bought nothing on the surface that
+    matters. Found by a surviving mutation: reading the raw field here behaves
+    identically for every gate that already had a check.
+    """
+    db = tmp_path / "b.db"
+    conn = core.connect(db)
+    g = _gate(conn, kind="resource", question="did the credential arrive?")
+    core.close_gate(conn, g, state="approved", reason="yes", actor="kevin")
+
+    before = _board(db)
+    assert "1 approved resource gate(s) carry no delivery check" in before
+    assert g not in before
+
+    core.revise_check(conn, g, "delivery", "false", "tester",
+                      "it shipped with no way to tell whether it landed")
+
+    after = _board(db)
+    assert "carry no delivery check" not in after, after
+    assert g in after and "PROMISED, NOT DELIVERED" in after
+
+
+def test_a_second_revision_reports_the_command_it_actually_replaced(tmp_path):
+    """The receipt must name its real predecessor, not the immutable original.
+
+    The gate's base check never changes, so reading it after a revision reports
+    the wrong `was` from the second revision onward. Found by a non-author
+    review (codex, PR #2) in the one command whose purpose is correcting a check
+    that measured the wrong thing.
+    """
+    db = tmp_path / "r.db"
+    conn = core.connect(db)
+    g = _gate(conn, kind="resource", delivery_check="false")
+
+    first = _cli(db, "--seat", "tester", "revise-check", g, "--kind", "delivery",
+                 "--command", "true", "--reason", "the original could never pass")
+    assert first.returncode == 0, first.stderr
+    assert "now: true" in first.stdout and "was: false" in first.stdout
+
+    second = _cli(db, "--seat", "tester", "revise-check", g, "--kind", "delivery",
+                  "--command", "test -e /", "--reason", "narrower and honest")
+    assert second.returncode == 0, second.stderr
+    assert "now: test -e /" in second.stdout
+    assert "was: true" in second.stdout, second.stdout
+    assert "was: false" not in second.stdout, "it reported the immutable original"

@@ -113,12 +113,15 @@ def cmd_show(a, conn) -> int:
     print(f"  raised    {g['raised_at']} by {g['raised_by']}")
     print(f"  consumer  {g['consumer']}")
     print(f"  decay     {g['decay']}")
-    if g["decay_check"]:
-        print(f"            check: {g['decay_check']}")
+    if g["effective_decay_check"]:
+        print(f"            check: {g['effective_decay_check']}")
     if g["horizon"]:
         print(f"  horizon   {g['horizon']}")
-    if g["delivery_check"]:
-        print(f"  delivery  check: {g['delivery_check']}")
+    if g["effective_delivery_check"]:
+        print(f"  delivery  check: {g['effective_delivery_check']}")
+    for r in g["check_revisions"]:
+        print(f"  revised   {r['kind']} check on {r['at']} by {r['revised_by']}")
+        print(f"            was measuring the wrong thing: {r['reason']}")
     if g["cites"]:
         print(f"  cites     {g['cites']}")
     if g["options"]:
@@ -265,7 +268,7 @@ def _decay_status(conn, g: dict) -> str:
         if obs["exit_code"] == 0:
             return "landed"
         return "broken" if obs["exit_code"] in _BROKEN_EXITS else "not yet"
-    return "unchecked" if g["decay_check"] else "unmeasured"
+    return "unchecked" if g["effective_decay_check"] else "unmeasured"
 
 
 def _delivery_status(conn, g: dict) -> str:
@@ -328,16 +331,16 @@ def cmd_board(a, conn) -> int:
         # in full first now, and a non-interactive caller must pass --yes, so
         # nothing here executes text nobody chose to run.
         pending = [(g, "decay") for g in core.list_gates(conn, state="open")
-                   if g["decay_check"]]
+                   if g["effective_decay_check"]]
         pending += [(g, "delivery") for g in core.list_gates(conn, state="approved")
-                    if g["delivery_check"]]
+                    if g["effective_delivery_check"]]
         if not pending:
             print("no checks to run — no open gate carries one.\n")
         else:
             print(f"about to run {len(pending)} command(s) stored in the ledger:")
             for g, kind in pending:
                 print(f"  {g['id']}  {kind:<8}  "
-                      f"{g['decay_check'] if kind == 'decay' else g['delivery_check']}")
+                      f"{g['effective_decay_check'] if kind == 'decay' else g['effective_delivery_check']}")
             if not a.yes:
                 if not sys.stdin.isatty():
                     raise JanusError(
@@ -366,7 +369,7 @@ def cmd_board(a, conn) -> int:
     # nothing else in the fleet was watching that gap.
     promised, unwatched = [], 0
     for g in core.list_gates(conn, state="approved"):
-        if not g["delivery_check"]:
+        if not g["effective_delivery_check"]:
             # A resource gate approved without a check cannot ever be shown to
             # have landed. Counted, not listed: a row nothing can clear would sit
             # there forever and train the reader to skip the section.
@@ -436,7 +439,7 @@ def cmd_board(a, conn) -> int:
             print(f"  {r['status']:<10}  {r['age']:<5}  {g['id']:<12}  {g['kind']:<12}  "
                   f"{_clip(g['question'], body)}")
             print(f"  {'':<10}  {'':<5}  {'':<12}  {'check →':<12}  "
-                  f"{_clip(g['delivery_check'], body)}")
+                  f"{_clip(g['effective_delivery_check'], body)}")
         hidden_p = len(promised) - shown_p
         if hidden_p > 0:
             print(f"\n  {hidden_p} more promise(s) below the fold — `janus board --all`.")
@@ -514,13 +517,13 @@ def _scorecard(conn) -> dict:
     # milestone cannot take directly: nothing records that a consumer acted. The
     # only observable proxy is a delivery check, so the number is split into what
     # is measurable and what is not, and UNKNOWN IS NEVER COUNTED AS ACTED.
-    measurable = [g for g in gates if g["delivery_check"]]
+    measurable = [g for g in gates if g["effective_delivery_check"]]
     confirmed = sum(
         1 for g in measurable
         if (o := core.latest_observation(conn, g["id"], "delivery")) and o["exit_code"] == 0)
 
     fields = {
-        "decay check": sum(1 for g in gates if g["decay_check"]),
+        "decay check": sum(1 for g in gates if g["effective_decay_check"]),
         "delivery check": len(measurable),
         "binding": sum(1 for g in gates if g["binding_sha256"]),
         "options": sum(1 for g in gates if g["options"]),
@@ -628,6 +631,28 @@ def _code_origin(module_path: Path) -> dict:
         if r.returncode == 0:
             info[key] = r.stdout.strip() if key == "branch" else bool(r.stdout.strip())
     return info
+
+
+def cmd_revise_check(a, conn) -> int:
+    # Read the predecessor BEFORE inserting, and read the EFFECTIVE one. The
+    # gate's base `decay_check`/`delivery_check` is immutable, so after the first
+    # revision it is no longer what this revision replaced — a second revision
+    # reported the original as `was` and lied about its own predecessor. Found by
+    # a non-author review, in the one command whose entire purpose is correcting
+    # a check that measured the wrong thing.
+    before = core.get_gate(conn, a.gate_id)
+    if before is None:
+        raise JanusError(f"no such gate: {a.gate_id}")
+    prior = before[f"effective_{a.kind}_check"]
+    g = core.revise_check(conn, a.gate_id, a.kind, a.command,
+                          core.seat_actor(a.seat), a.reason)
+    print(f"{a.gate_id}: {a.kind} check revised (by {core.seat_actor(a.seat)})")
+    print(f"  now: {g[f'effective_{a.kind}_check']}")
+    print(f"  was: {prior or '(none — this gate had no check)'}")
+    print("  Nothing was overwritten. The original stays on the gate, this "
+          "revision is a new row,\n  and `janus show` prints both. A revision "
+          "changes no state and touches no ruling.")
+    return 0
 
 
 def cmd_doctor(a, conn) -> int:
@@ -768,6 +793,15 @@ def build_parser() -> argparse.ArgumentParser:
     st = sub.add_parser("stats", help="the dated scorecard: is anyone actually using this")
     st.add_argument("--json", action="store_true")
     st.set_defaults(fn=cmd_stats)
+
+    rv = sub.add_parser("revise-check",
+                        help="correct a decay/delivery check that measured the wrong thing")
+    rv.add_argument("gate_id")
+    rv.add_argument("--kind", required=True, choices=("decay", "delivery"))
+    rv.add_argument("--command", required=True, help="the check that measures the actual question")
+    rv.add_argument("--reason", required=True,
+                    help="what the old check measured INSTEAD of the question")
+    rv.set_defaults(fn=cmd_revise_check)
 
     doc = sub.add_parser("doctor", help="ledger health, append-only proof, drift")
     doc.set_defaults(fn=cmd_doctor)

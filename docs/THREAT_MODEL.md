@@ -70,6 +70,20 @@ abuse. Mitigation is attribution and append-only history rather than
 restriction: a wrong close is visible, answerable, and cheap to re-raise. A
 digest would not help — it proves what overtook a gate, never that it did.
 
+**A revised check that lies.** Migration 0002 lets a check be corrected, because
+one written at raise time can measure something adjacent to the question and
+append-only meant it could never be fixed — a delivered promise read as
+outstanding forever, which is the "queue that lies" failure occurring inside the
+section built to prevent it. The obvious abuse is revising a check to `true` so a
+gate reports whatever the reviser wants. Mitigation is the one `superseded`
+already relies on, and for the same reason: attribution plus append-only history.
+A revision is a new row that cannot alter the original, `janus show` prints every
+revision with who made it and why, and a bad one is visible, answerable, and
+cheap to correct with another. Restricting who may revise would buy less than it
+costs, and would put Janus in the business of judging its own records. Note the
+revised command is executable text like any other check, so it inherits the
+visible-before-invoked rule above.
+
 **Approval drift.** A ruling that names an artifact loosely can be replayed
 against different bytes. Mitigated by binding a SHA-256 at ruling time, recorded
 by Janus and enforced by the consumer — never by Janus, which would put it in

@@ -347,6 +347,15 @@ def get_gate(conn: sqlite3.Connection, gate_id: str) -> dict | None:
     gate["observations"] = [dict(o) for o in conn.execute(
         "SELECT * FROM observations WHERE gate_id = ? ORDER BY at DESC LIMIT 5",
         (gate_id,))]
+    gate["check_revisions"] = [dict(r) for r in conn.execute(
+        "SELECT * FROM check_revisions WHERE gate_id = ? ORDER BY id", (gate_id,))]
+    # Callers must never have to remember to ask for the revision. Reading
+    # `decay_check` directly is how a corrected check gets quietly ignored, so
+    # the effective value is computed here, once, for everyone.
+    gate["effective_decay_check"] = effective_check(
+        conn, gate_id, "decay", gate["decay_check"])
+    gate["effective_delivery_check"] = effective_check(
+        conn, gate_id, "delivery", gate["delivery_check"])
     return gate
 
 
@@ -386,6 +395,51 @@ def list_gates(conn: sqlite3.Connection, *, state: str = "open") -> list[dict]:
 # The shell's own convention for a command killed by `timeout(1)`. Borrowed
 # rather than invented so the number means the same thing to anyone reading the
 # ledger with no Janus knowledge.
+def revise_check(conn: sqlite3.Connection, gate_id: str, kind: str, command: str,
+                 actor: str, reason: str) -> dict:
+    """Correct a check without rewriting anything.
+
+    A check is executable text written once, at raise time, by someone guessing
+    at a future they have not seen. When it turns out to measure something
+    adjacent to the question, the append-only ledger cannot edit it — so a
+    correction is a NEW ROW. The original stays on the gate and stays visible;
+    this records who replaced it and why.
+
+    Deliberately permitted on a CLOSED gate: the case that forced this was an
+    approved resource gate whose delivery check could never pass, so the board
+    reported a delivered promise as outstanding forever. A revision changes no
+    state and touches no ruling.
+    """
+    if kind not in ("decay", "delivery"):
+        raise JanusError("kind must be 'decay' or 'delivery'")
+    if gate_id and get_gate(conn, gate_id) is None:
+        raise JanusError(f"no such gate: {gate_id}")
+    if not command.strip():
+        raise JanusError("a revision needs a command")
+    if not reason.strip():
+        raise JanusError(
+            "a revision needs a reason, and it should say what the old check "
+            "actually measured instead of the question. That sentence is what "
+            "makes the gap findable by the next person to write one."
+        )
+    conn.execute(
+        "INSERT INTO check_revisions (gate_id, kind, command, at, revised_by, reason)"
+        " VALUES (?,?,?,?,?,?)",
+        (gate_id, kind, command, now(), actor, reason))
+    audit(conn, actor, f"revise:{kind}", gate_id, reason[:120])
+    conn.commit()
+    return get_gate(conn, gate_id)
+
+
+def effective_check(conn: sqlite3.Connection, gate_id: str, kind: str,
+                    original: str | None) -> str | None:
+    """The newest revision's command, or the gate's original when none exists."""
+    row = conn.execute(
+        "SELECT command FROM check_revisions WHERE gate_id = ? AND kind = ?"
+        " ORDER BY id DESC LIMIT 1", (gate_id, kind)).fetchone()
+    return row["command"] if row else original
+
+
 TIMEOUT_EXIT = 124
 
 
@@ -395,7 +449,7 @@ def observe(conn: sqlite3.Connection, gate_id: str, kind: str, actor: str,
     gate = get_gate(conn, gate_id)
     if gate is None:
         raise JanusError(f"no such gate: {gate_id}")
-    cmd = gate["decay_check"] if kind == "decay" else gate["delivery_check"]
+    cmd = gate["effective_decay_check"] if kind == "decay" else gate["effective_delivery_check"]
     if not cmd:
         raise JanusError(f"gate {gate_id} carries no {kind} check")
     # A check that hangs is a FACT ABOUT THE CHECK and gets recorded as one.

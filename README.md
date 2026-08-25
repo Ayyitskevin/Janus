@@ -18,6 +18,7 @@ janus --seat <seat> raise "<one sentence a tired human can answer>" \
 janus board                # the one screen: what is waiting, how long, what worsens
 janus show <id>            # detail, and whether the binding still holds
 janus stats                # the dated scorecard: is anyone actually using this
+janus revise-check <id> --kind delivery --command "..." --reason "..."
 janus decide <id> --approve --reason "..." [--option <id>]
 ```
 
@@ -26,6 +27,13 @@ any priority field — a decay check that has fired outranks one that has never
 been run, which outranks one measured to still have time. A gate whose decay
 sentence carries no re-runnable check is printed as `unmeasured`, because
 unknown is not the same as fine. `janus list` remains the plain enumeration.
+
+A check is executable text written once, at raise time, by someone guessing at a
+future they have not seen — so `revise-check` exists for when it turns out to
+measure something adjacent to the question. It is a **new row**, never an edit:
+the original stays on the gate, `show` prints every revision with who made it and
+why, and the effective check is simply the newest one. That is the append-only
+rule kept rather than bargained with.
 
 Under its own heading the board also carries **PROMISED, NOT DELIVERED**: gates a
 human already approved whose `--delivery-check` has not yet succeeded. A ruling
