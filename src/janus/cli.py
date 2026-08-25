@@ -634,12 +634,21 @@ def _code_origin(module_path: Path) -> dict:
 
 
 def cmd_revise_check(a, conn) -> int:
+    # Read the predecessor BEFORE inserting, and read the EFFECTIVE one. The
+    # gate's base `decay_check`/`delivery_check` is immutable, so after the first
+    # revision it is no longer what this revision replaced — a second revision
+    # reported the original as `was` and lied about its own predecessor. Found by
+    # a non-author review, in the one command whose entire purpose is correcting
+    # a check that measured the wrong thing.
+    before = core.get_gate(conn, a.gate_id)
+    if before is None:
+        raise JanusError(f"no such gate: {a.gate_id}")
+    prior = before[f"effective_{a.kind}_check"]
     g = core.revise_check(conn, a.gate_id, a.kind, a.command,
                           core.seat_actor(a.seat), a.reason)
     print(f"{a.gate_id}: {a.kind} check revised (by {core.seat_actor(a.seat)})")
-    print(f"  now: {g['effective_' + a.kind + '_check']}")
-    original = g["decay_check"] if a.kind == "decay" else g["delivery_check"]
-    print(f"  was: {original or '(none — this gate had no check)'}")
+    print(f"  now: {g[f'effective_{a.kind}_check']}")
+    print(f"  was: {prior or '(none — this gate had no check)'}")
     print("  Nothing was overwritten. The original stays on the gate, this "
           "revision is a new row,\n  and `janus show` prints both. A revision "
           "changes no state and touches no ruling.")

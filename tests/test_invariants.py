@@ -1005,7 +1005,7 @@ def test_correcting_a_check_clears_a_delivered_promise_off_the_board(tmp_path):
     # is the threat-model requirement that commands be visible before they run.
     # What must be gone is the gate's ROW under the heading.
     assert "PROMISED, NOT DELIVERED" not in after, after
-    promised_section = after.split("PROMISED, NOT DELIVERED")[1:] 
+    promised_section = after.split("PROMISED, NOT DELIVERED")[1:]
     assert not promised_section
     assert core.latest_observation(core.connect(db), g, "delivery")["exit_code"] == 0
 
@@ -1032,3 +1032,28 @@ def test_a_gate_that_gains_a_delivery_check_stops_being_counted_as_unwatchable(t
     after = _board(db)
     assert "carry no delivery check" not in after, after
     assert g in after and "PROMISED, NOT DELIVERED" in after
+
+
+def test_a_second_revision_reports_the_command_it_actually_replaced(tmp_path):
+    """The receipt must name its real predecessor, not the immutable original.
+
+    The gate's base check never changes, so reading it after a revision reports
+    the wrong `was` from the second revision onward. Found by a non-author
+    review (codex, PR #2) in the one command whose purpose is correcting a check
+    that measured the wrong thing.
+    """
+    db = tmp_path / "r.db"
+    conn = core.connect(db)
+    g = _gate(conn, kind="resource", delivery_check="false")
+
+    first = _cli(db, "--seat", "tester", "revise-check", g, "--kind", "delivery",
+                 "--command", "true", "--reason", "the original could never pass")
+    assert first.returncode == 0, first.stderr
+    assert "now: true" in first.stdout and "was: false" in first.stdout
+
+    second = _cli(db, "--seat", "tester", "revise-check", g, "--kind", "delivery",
+                  "--command", "test -e /", "--reason", "narrower and honest")
+    assert second.returncode == 0, second.stderr
+    assert "now: test -e /" in second.stdout
+    assert "was: true" in second.stdout, second.stdout
+    assert "was: false" not in second.stdout, "it reported the immutable original"
