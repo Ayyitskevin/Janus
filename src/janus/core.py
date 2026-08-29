@@ -173,7 +173,7 @@ def verify_binding(kind: str, locator: str, expected: str) -> tuple[bool | None,
     except JanusError as e:
         return None, f"CANNOT VERIFY — {e}"
     if actual == expected:
-        return True, "binding matches: the ruled bytes are the live bytes"
+        return True, "binding matches: the bound bytes are the live bytes"
     return False, (
         "BINDING NO LONGER MATCHES — the artifact changed since it was bound. "
         "A ruling approves specific bytes; it does not follow them. Treat any "
@@ -749,6 +749,13 @@ def close_gate(
         rebind and state in RULED_STATES and gate["binding_sha256"]
     ) else None
     if state in RULED_STATES and gate["binding_sha256"] and bound is None:
+        if not rebind:
+            raise JanusError(
+                f"cannot record {state}: gate {gate_id} is bound, but ruling-time "
+                "rebinding was disabled, so Janus has no digest to record. The "
+                "gate remains open. Re-enable rebinding, or supersede and "
+                "re-raise the gate."
+            )
         raise JanusError(
             f"cannot record {state}: gate {gate_id} is bound, but Janus cannot "
             "read the artifact to record the bytes ruled on. The gate remains "
