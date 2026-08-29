@@ -1139,15 +1139,48 @@ def test_the_board_discloses_what_the_one_screen_fold_hid(tmp_path):
     conn = core.connect(db)
     ids = [_gate(conn, question=f"gate number {i}") for i in range(8)]
 
-    folded = _board(db, lines=12)          # (12 - 8) // 2 == 2 gates fit
+    folded = _board(db, lines=12)
     assert "more below the fold" in folded
     hidden = [g for g in ids if g not in folded]
-    assert len(hidden) == 6, folded
+    assert 0 < len(hidden) < len(ids), folded
     assert f"{len(hidden)} more below the fold" in folded
+    assert len(folded.splitlines()) <= 12, folded
+    assert max(map(len, folded.splitlines())) <= 110, folded
 
     everything = _board(db, "--all", lines=12)
     assert all(g in everything for g in ids)
     assert "more below the fold" not in everything
+    assert len(everything.splitlines()) > 12, "--all must remain intentionally unbounded"
+
+
+def test_the_board_shares_one_screen_between_decisions_and_promises(tmp_path):
+    """Neither section, its fold disclosure, nor unwatched promises may overflow."""
+    db = tmp_path / "b.db"
+    conn = core.connect(db)
+    waiting = [_gate(conn, question=f"open decision {i}") for i in range(4)]
+    promised = [
+        _gate(
+            conn,
+            question=f"approved promise {i}",
+            kind="resource",
+            delivery_check="false",
+        )
+        for i in range(4)
+    ]
+    for gate in promised:
+        core.close_gate(conn, gate, state="approved", reason="proceed", actor="kevin")
+    unwatched = _gate(conn, question="approved without delivery check", kind="authority")
+    core.close_gate(conn, unwatched, state="approved", reason="proceed", actor="kevin")
+
+    folded = _board(db, lines=12, cols=80)
+    lines = folded.splitlines()
+    assert len(lines) <= 12, folded
+    assert max(map(len, lines)) <= 80, folded
+    assert any(gate in folded for gate in waiting), folded
+    assert "PROMISED, NOT DELIVERED" in folded
+    assert any(gate in folded for gate in promised), folded
+    assert folded.count("below the fold") == 2, folded
+    assert "1 approved gate(s) carry no delivery check" in folded
 
 
 def test_board_check_records_observations_without_changing_state(tmp_path):
