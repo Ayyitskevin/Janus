@@ -196,8 +196,12 @@ def test_doctor_exits_zero_on_a_healthy_ledger(tmp_path):
     r = subprocess.run(
         [sys.executable, "-m", "janus.cli", "--db", str(tmp_path / "d.db"), "doctor"],
         capture_output=True, text=True,
-        env={"PATH": "/usr/bin:/bin", "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
-             "HOME": str(tmp_path), "USER": "tester"},
+        env={
+            "PATH": "/usr/bin:/bin",
+            "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
+            "HOME": str(tmp_path),
+            "USER": "tester",
+        },
     )
     assert r.returncode == 0, r.stderr
     assert "append-only enforced (UPDATE" in r.stdout
