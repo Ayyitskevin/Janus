@@ -232,8 +232,50 @@ def cmd_supersede(a, conn) -> int:
     return _close(a, conn, "superseded", a.reason)
 
 
+def _effective_command(gate: dict, kind: str) -> str | None:
+    return gate["effective_decay_check" if kind == "decay" else "effective_delivery_check"]
+
+
+def _preview_and_confirm_checks(pending: list[tuple[dict, str]], *, yes: bool) -> bool:
+    """Display executable ledger text in full, then obtain consent to run it."""
+    print(f"about to run {len(pending)} command(s) stored in the ledger:")
+    for gate, kind in pending:
+        print(f"  {gate['id']}  {kind:<8}  {_effective_command(gate, kind)}")
+    # In a terminal, newlines are normally enough. An unattended caller may be
+    # streaming stdout, though, so make the preview observable before crossing
+    # the execution boundary rather than merely ordering two buffered writes.
+    sys.stdout.flush()
+    if not yes:
+        if not sys.stdin.isatty():
+            raise JanusError(
+                "refusing to run stored commands unattended. Re-run with --yes "
+                "once you have read the list above; a gate's check is text "
+                "someone else wrote."
+            )
+        noun = "it" if len(pending) == 1 else "them"
+        if input(f"run {noun}? [y/N] ").strip().lower() not in ("y", "yes"):
+            print("nothing run.")
+            return False
+    print()
+    return True
+
+
 def cmd_check(a, conn) -> int:
-    result = core.observe(conn, a.gate_id, a.kind, core.seat_actor(a.seat))
+    gate = core.get_gate(conn, a.gate_id)
+    if gate is None:
+        raise JanusError(f"no such gate: {a.gate_id}")
+    command = _effective_command(gate, a.kind)
+    if not command:
+        raise JanusError(f"gate {a.gate_id} carries no {a.kind} check")
+    if not _preview_and_confirm_checks([(gate, a.kind)], yes=a.yes):
+        return 0
+    result = core.observe(
+        conn,
+        a.gate_id,
+        a.kind,
+        core.seat_actor(a.seat),
+        expected_command=command,
+    )
     verdict = "occurred/landed" if result["exit_code"] == 0 else "not yet"
     print(f"{a.kind} check: exit={result['exit_code']} ({verdict})")
     if result["output"]:
@@ -322,7 +364,13 @@ def cmd_board(a, conn) -> int:
 
     def run(gate, kind):
         try:
-            core.observe(conn, gate["id"], kind, seat)
+            core.observe(
+                conn,
+                gate["id"],
+                kind,
+                seat,
+                expected_command=_effective_command(gate, kind),
+            )
         except (JanusError, OSError) as e:
             print(f"{kind} check failed to run for {gate['id']}: {e}", file=sys.stderr)
 
@@ -345,21 +393,8 @@ def cmd_board(a, conn) -> int:
         if not pending:
             print("no checks to run — no open gate carries one.\n")
         else:
-            print(f"about to run {len(pending)} command(s) stored in the ledger:")
-            for g, kind in pending:
-                print(f"  {g['id']}  {kind:<8}  "
-                      f"{g['effective_decay_check'] if kind == 'decay' else g['effective_delivery_check']}")
-            if not a.yes:
-                if not sys.stdin.isatty():
-                    raise JanusError(
-                        "refusing to run stored commands unattended. Re-run with --yes "
-                        "once you have read the list above; a gate's check is text "
-                        "someone else wrote."
-                    )
-                if input("run them? [y/N] ").strip().lower() not in ("y", "yes"):
-                    print("nothing run.")
-                    return 0
-            print()
+            if not _preview_and_confirm_checks(pending, yes=a.yes):
+                return 0
             for g, kind in pending:
                 run(g, kind)
 
@@ -795,6 +830,8 @@ def build_parser() -> argparse.ArgumentParser:
     c = sub.add_parser("check", help="run a decay or delivery check (observation only)")
     c.add_argument("gate_id")
     c.add_argument("--kind", default="decay", choices=("decay", "delivery"))
+    c.add_argument("--yes", action="store_true",
+                   help="run the displayed command without confirming")
     c.set_defaults(fn=cmd_check)
 
     b = sub.add_parser("board", help="the one screen: what is waiting, how long, what worsens")

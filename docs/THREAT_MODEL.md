@@ -39,13 +39,17 @@ run as part of listing gates, and must be visible in full before they are
 invoked. On-demand only, by explicit act.
 
 *How this is honoured, and where it was broken.* `janus check <id>` runs one
-check against one gate. `janus board --check` runs every stored check at once —
-and its first build ran them without the operator seeing a single command,
-breaking the third clause above within a day of the clause being written. It now
-prints every command in full first, and a non-interactive caller must pass
-`--yes`, so nothing executes text nobody chose to run. A check that hangs is
-killed and recorded as exit `124` rather than escaping as an exception, because
-an unrecorded check is indistinguishable from one never run.
+check against one gate. `janus board --check` runs every stored check at once.
+Each path initially shipped a version that ran stored text without first making
+the operator read it: the board was corrected first, while the single-check path
+remained an unguarded execution path. Both now share one boundary that prints
+every effective command in full, flushes the preview before execution, and asks
+for confirmation. A non-interactive caller must pass `--yes`; that skips the
+prompt, not the preview. Consent binds the exact displayed command, so a check
+revision appended while the preview is being read makes execution fail closed
+rather than substituting unseen text. A check that hangs is killed and recorded
+as exit `124` rather than escaping as an exception, because an unrecorded check
+is indistinguishable from one never run.
 
 *Where this becomes remote code execution.* Everything above holds only while a
 gate can be written solely by a process already running as this user — writing a

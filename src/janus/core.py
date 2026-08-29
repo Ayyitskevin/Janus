@@ -444,7 +444,7 @@ TIMEOUT_EXIT = 124
 
 
 def observe(conn: sqlite3.Connection, gate_id: str, kind: str, actor: str,
-            timeout: int = 120) -> dict:
+            timeout: int = 120, *, expected_command: str | None = None) -> dict:
     """Run a decay or delivery check. An observation NEVER changes state."""
     gate = get_gate(conn, gate_id)
     if gate is None:
@@ -452,6 +452,15 @@ def observe(conn: sqlite3.Connection, gate_id: str, kind: str, actor: str,
     cmd = gate["effective_decay_check"] if kind == "decay" else gate["effective_delivery_check"]
     if not cmd:
         raise JanusError(f"gate {gate_id} carries no {kind} check")
+    # A CLI confirmation is consent to the command that was DISPLAYED. Check
+    # revisions are append-only but can arrive from another process while the
+    # operator is reading that preview. Never let a newer, unseen command ride
+    # on consent given to its predecessor.
+    if expected_command is not None and cmd != expected_command:
+        raise JanusError(
+            f"gate {gate_id}'s {kind} check changed after preview; nothing ran. "
+            "Review the new command and try again."
+        )
     # A check that hangs is a FACT ABOUT THE CHECK and gets recorded as one.
     # Letting TimeoutExpired escape did two bad things: it crashed the caller
     # (it is not an OSError, so the handlers around this did not catch it), and
