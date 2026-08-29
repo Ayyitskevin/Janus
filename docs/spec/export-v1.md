@@ -106,5 +106,10 @@ pass both before claiming v1 compatibility.
 - Unknown gate states and binding kinds are incompatible; they never default.
 - Verification stops on a document or record digest mismatch.
 
+"Read-only" describes logical ledger content: export creates no main database,
+schema, row, audit event, or observation. SQLite may materialize private
+`-wal`/`-shm` coordination files to read a WAL-mode snapshot; Janus post-checks
+the resulting database family against its exact storage boundary.
+
 The CLI emits one canonical envelope followed by one line feed. The line feed
 is transport whitespace and is outside both digest scopes.

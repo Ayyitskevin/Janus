@@ -54,6 +54,10 @@ migration, runs no check, and does not inspect live bindings. The exact format
 and cross-language conformance vector are in [the export v1
 specification](docs/spec/export-v1.md). Verifying an export proves content
 identity only; it does not turn a ruling into permission to act.
+For a WAL-mode ledger, SQLite may materialize private `-wal`/`-shm`
+coordination files even on a `mode=ro` connection. Export post-checks those
+files against the same `0600` boundary; it never creates the main database or
+changes schema, rows, audit history, or gate state.
 
 The ledger is the local trust boundary, not just an implementation detail. A
 new ledger and every directory Janus creates for it are owner-only (`0600` and

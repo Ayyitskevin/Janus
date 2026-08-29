@@ -29,6 +29,12 @@ whose name did not exist during inspection. A failed storage line is a
 deliberate operator action, not permission for Janus to chmod the world it
 found.
 
+Stable export is read-only at the ledger-content boundary, not physically
+side-effect-free. SQLite may create or update private WAL/SHM coordination
+files to obtain a safe `mode=ro` snapshot. Export never creates the main
+database or changes logical rows, and it post-checks the resulting family so
+that coordination cannot silently weaken the owner-only boundary.
+
 This is inherited, not chosen, and it is why Janus must never enter the
 permission path. A system that treats a Janus read as sufficient grounds to act
 would be trusting a store that a same-OS-user process can rewrite.

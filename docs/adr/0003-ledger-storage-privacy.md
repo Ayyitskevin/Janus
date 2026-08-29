@@ -72,10 +72,12 @@ extra hard links) are likewise refused before SQLite opens them. `doctor` prints
 those findings and skips checks that would require an unsafe open.
 
 The boundary is shared by ordinary writable commands and the stable export's
-separate read-only connector. Export still does not create or migrate a ledger;
-both connectors lexically normalize an absolute pathname without resolving
-symbolic links, refuse the same identity hazards, and only then open SQLite in
-their explicit `mode=rw` or `mode=ro`.
+separate logically read-only connector. Export does not create the main
+database, migrate schema, or write ledger rows. SQLite may materialize WAL/SHM
+coordination files for its `mode=ro` snapshot; a successful export post-checks
+the resulting family after close. Both connectors lexically normalize an
+absolute pathname without resolving symbolic links, refuse the same identity
+hazards, and then open SQLite in their explicit `mode=rw` or `mode=ro`.
 
 ## Consequences
 
@@ -90,7 +92,8 @@ their explicit `mode=rw` or `mode=ro`.
 - Database-family symlinks, wrong types/owners, and hard-link aliases are
   visible failures and are refused before SQLite opens them.
 - This change writes no schema migration and does not alter gates, rulings,
-  observations, audit semantics, stable export, or execution authority.
+  observations, audit semantics, the stable-export format, or execution
+  authority.
 
 ## Alternatives considered
 
