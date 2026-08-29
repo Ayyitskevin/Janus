@@ -80,8 +80,10 @@ python -m pip install -e '.[test]'
 ./scripts/check.sh
 ```
 
-The gate compiles the package and runs every invariant test. Keep it green
-before pushing; CI repeats it on every branch push and pull request.
+The gate lints and compiles the sources, runs every invariant test, builds a
+source distribution and wheel, then installs that wheel into a clean virtual
+environment and checks the CLI plus packaged migrations. Keep it green before
+pushing; CI repeats the same gate on every branch push and pull request.
 
 ## Why this exists
 
