@@ -1,0 +1,239 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Ayyitskevin/Janus/blob/main/docs/spec/rollout-receipt-v1.schema.json",
+  "title": "Janus rollout receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "completed_at",
+    "preparation",
+    "target",
+    "before",
+    "after",
+    "releases",
+    "steps",
+    "rollback",
+    "semantics",
+    "result",
+    "deployment_performed"
+  ],
+  "properties": {
+    "schema": { "const": "janus.rollout-receipt.v1" },
+    "completed_at": { "$ref": "#/$defs/timestamp" },
+    "preparation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bundle",
+        "manifest_sha256",
+        "candidate_commit",
+        "rollback_commit",
+        "backup_sha256"
+      ],
+      "properties": {
+        "bundle": { "$ref": "#/$defs/absolutePath" },
+        "manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "candidate_commit": { "$ref": "#/$defs/commit" },
+        "rollback_commit": { "$ref": "#/$defs/commit" },
+        "backup_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["database", "install_root", "active_environment", "wrapper"],
+      "properties": {
+        "database": { "$ref": "#/$defs/absolutePath" },
+        "install_root": { "$ref": "#/$defs/absolutePath" },
+        "active_environment": { "$ref": "#/$defs/absolutePath" },
+        "wrapper": { "$ref": "#/$defs/absolutePath" }
+      }
+    },
+    "before": { "$ref": "#/$defs/state" },
+    "after": { "$ref": "#/$defs/state" },
+    "releases": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate", "rollback", "legacy_environment"],
+      "properties": {
+        "candidate": { "$ref": "#/$defs/release" },
+        "rollback": { "$ref": "#/$defs/release" },
+        "legacy_environment": {
+          "oneOf": [
+            { "$ref": "#/$defs/absolutePath" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "steps": {
+      "type": "array",
+      "uniqueItems": true,
+      "minItems": 10,
+      "items": {
+        "enum": [
+          "validated_preparation",
+          "matched_live_snapshot",
+          "staged_candidate",
+          "staged_rollback",
+          "entered_maintenance",
+          "repaired_storage",
+          "migrated_candidate",
+          "verified_rollback_reader",
+          "activated_candidate",
+          "wrote_installed_provenance"
+        ]
+      },
+      "allOf": [
+        { "contains": { "const": "validated_preparation" } },
+        { "contains": { "const": "matched_live_snapshot" } },
+        { "contains": { "const": "staged_candidate" } },
+        { "contains": { "const": "staged_rollback" } },
+        { "contains": { "const": "entered_maintenance" } },
+        { "contains": { "const": "repaired_storage" } },
+        { "contains": { "const": "migrated_candidate" } },
+        { "contains": { "const": "verified_rollback_reader" } },
+        { "contains": { "const": "activated_candidate" } },
+        { "contains": { "const": "wrote_installed_provenance" } }
+      ]
+    },
+    "rollback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code_environment", "database_backup", "database_restore_automatic"],
+      "properties": {
+        "code_environment": { "$ref": "#/$defs/absolutePath" },
+        "database_backup": { "$ref": "#/$defs/absolutePath" },
+        "database_restore_automatic": { "const": false }
+      }
+    },
+    "semantics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authority", "receipt_is_authority"],
+      "properties": {
+        "authority": { "const": "external_to_janus" },
+        "receipt_is_authority": { "const": false }
+      }
+    },
+    "result": { "const": "completed" },
+    "deployment_performed": { "const": true }
+  },
+  "$defs": {
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "absolutePath": { "type": "string", "pattern": "^/" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "migration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "checksum"],
+      "properties": {
+        "version": { "type": "string", "minLength": 1 },
+        "checksum": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gates",
+        "gate_options",
+        "rulings",
+        "observations",
+        "check_revisions",
+        "audit_events"
+      ],
+      "properties": {
+        "gates": { "type": "integer", "minimum": 0 },
+        "gate_options": { "type": "integer", "minimum": 0 },
+        "rulings": { "type": "integer", "minimum": 0 },
+        "observations": { "type": "integer", "minimum": 0 },
+        "check_revisions": { "type": "integer", "minimum": 0 },
+        "audit_events": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "digests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gates",
+        "gate_options",
+        "rulings",
+        "observations",
+        "check_revisions",
+        "audit_events"
+      ],
+      "properties": {
+        "gates": { "$ref": "#/$defs/sha256" },
+        "gate_options": { "$ref": "#/$defs/sha256" },
+        "rulings": { "$ref": "#/$defs/sha256" },
+        "observations": { "$ref": "#/$defs/sha256" },
+        "check_revisions": { "$ref": "#/$defs/sha256" },
+        "audit_events": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "databaseFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["integrity_check", "migrations", "counts", "content_sha256"],
+      "properties": {
+        "integrity_check": { "const": "ok" },
+        "migrations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/migration" }
+        },
+        "counts": { "$ref": "#/$defs/counts" },
+        "content_sha256": { "$ref": "#/$defs/digests" }
+      }
+    },
+    "familyEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "device", "inode", "size", "mtime_ns"],
+      "properties": {
+        "mode": { "type": "string", "pattern": "^[0-7]{4}$" },
+        "device": { "type": "integer", "minimum": 0 },
+        "inode": { "type": "integer", "minimum": 1 },
+        "size": { "type": "integer", "minimum": 0 },
+        "mtime_ns": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["directory", "database"],
+      "properties": {
+        "directory": { "$ref": "#/$defs/familyEntry" },
+        "database": { "$ref": "#/$defs/familyEntry" },
+        "wal": { "$ref": "#/$defs/familyEntry" },
+        "shm": { "$ref": "#/$defs/familyEntry" },
+        "journal": { "$ref": "#/$defs/familyEntry" }
+      }
+    },
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["installed_commit", "database", "storage"],
+      "properties": {
+        "installed_commit": { "$ref": "#/$defs/commit" },
+        "database": { "$ref": "#/$defs/databaseFacts" },
+        "storage": { "$ref": "#/$defs/storage" }
+      }
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "environment", "wheel_sha256"],
+      "properties": {
+        "commit": { "$ref": "#/$defs/commit" },
+        "environment": { "$ref": "#/$defs/absolutePath" },
+        "wheel_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}
