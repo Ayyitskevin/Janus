@@ -74,7 +74,8 @@ The invariant suite covers these distinct cases:
 - With both the explicit stdout flush and the board's expected-command argument
   deliberately removed, their two focused regressions failed. Restoring both
   makes the tests pass.
-- `./scripts/check.sh` compiles the package and passes all 76 invariant tests.
+- `./scripts/check.sh` compiles the package and passes 105 tests: all 76
+  invariant tests plus the 29 stable-export tests now present on main.
 - A clean Python 3.12 virtual environment installed the candidate as a regular
   site-packages copy (not editable). Its unattended call exited 2, printed the
   complete command and `--yes` recovery, and left zero observations and no
