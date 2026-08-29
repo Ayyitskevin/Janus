@@ -1291,3 +1291,89 @@ def test_a_second_revision_reports_the_command_it_actually_replaced(tmp_path):
     assert "now: test -e /" in second.stdout
     assert "was: true" in second.stdout, second.stdout
     assert "was: false" not in second.stdout, "it reported the immutable original"
+
+
+# ------------- tri-state: "cannot verify" is not "fine" (CLI layer) ---------
+# `verify_binding` is deliberately tri-state and its docstring already says None
+# "must never read as fine". core-level test_unverifiable_binding_is_not_reported_as_fine
+# proves the reader returns None. These prove the three places a HUMAN reads it
+# do not flatten that None back into silence — which all three did.
+
+
+def test_doctor_reports_a_binding_it_cannot_verify(tmp_path):
+    """A binding Janus cannot read printed NO doctor line at all.
+
+    `doctor` counted only `ok is False` (the artifact changed). A gate whose
+    artifact is missing, unreadable, or bound to a relative path from another
+    process's cwd returned None and fell through both branches, so its output
+    was byte-identical to a gate that verified clean. The live instance:
+    g3410c2cff0f, open four days, reading CANNOT VERIFY in `show` while
+    `doctor` said nothing about it.
+    """
+    db = tmp_path / "d.db"
+    conn = core.connect(db)
+    art = tmp_path / "gone.md"
+    art.write_text("v1")
+    unreadable = _gate(conn, question="bound to something that vanished",
+                       binding=core.resolve_binding("file", str(art)))
+    clean_art = tmp_path / "here.md"
+    clean_art.write_text("still here")
+    clean = _gate(conn, question="bound to something readable",
+                  binding=core.resolve_binding("file", str(clean_art)))
+    art.unlink()
+
+    r = _cli(db, "doctor")
+    assert r.returncode == 0, r.stderr
+    assert unreadable in r.stdout, "an unverifiable binding must be named"
+    assert "unverifiable" in r.stdout, r.stdout
+    # and it must not be silently upgraded into the drift count, which means
+    # something different and actionable
+    assert "bound artifact no longer matches" not in r.stdout, r.stdout
+    # a readable binding still says nothing: this is a report of problems only
+    assert f"unverifiable {clean}" not in r.stdout, r.stdout
+
+
+def test_ruling_on_an_unverifiable_binding_warns_that_it_binds_nothing(tmp_path):
+    """Drift refused without --yes; "cannot verify" said nothing whatsoever.
+
+    That is the more dangerous half, because `digest_of_live` swallows the read
+    error and returns None, so the ruling is written with bound_sha256 = NULL.
+    Invariant 2 is that a ruling binds a digest and not a name — a ruling that
+    binds NOTHING is one nobody can ever re-check. Janus states it and still
+    writes: enforcing would put Janus in the permission path (ADR 0001).
+    """
+    db = tmp_path / "d.db"
+    conn = core.connect(db)
+    art = tmp_path / "gone.md"
+    art.write_text("v1")
+    g = _gate(conn, question="rule me with no readable artifact",
+              binding=core.resolve_binding("file", str(art)))
+    conn.commit()
+    art.unlink()
+
+    r = _cli(db, "decide", g, "--approve", "--reason", "ruling anyway")
+    assert r.returncode == 0, r.stderr
+    assert "CANNOT VERIFY" in r.stderr, r.stderr
+    assert "NO bytes" in r.stderr, r.stderr
+    # the ruling really did land, and really did bind nothing
+    assert core.get_gate(core.connect(db), g)["ruling"]["bound_sha256"] is None
+
+
+def test_show_says_when_a_ruling_bound_nothing(tmp_path):
+    """`show` printed the "ruled on bytes @" line only when a digest existed.
+
+    So a ruling that bound nothing rendered identically to one on a gate that
+    never had a binding at all — absent reading as fine, one layer further on.
+    """
+    db = tmp_path / "d.db"
+    conn = core.connect(db)
+    art = tmp_path / "gone.md"
+    art.write_text("v1")
+    g = _gate(conn, question="ruled while unreadable",
+              binding=core.resolve_binding("file", str(art)))
+    art.unlink()
+    core.close_gate(conn, g, state="approved", reason="ruled anyway", actor="kevin")
+
+    out = _cli(db, "show", g).stdout
+    assert "NONE RECORDED" in out, out
+    assert "could not read the artifact" in out, out
