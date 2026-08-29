@@ -652,6 +652,19 @@ def test_a_bound_gate_cannot_be_ruled_on_when_its_bytes_cannot_be_read(
     assert gate["ruling"] is None
 
 
+def test_a_bound_ruling_cannot_disable_rebinding(conn, tmp_path):
+    """A deliberate no-rebind call must refuse without blaming the filesystem."""
+    art = tmp_path / "readable.txt"
+    art.write_text("reviewed bytes")
+    g = _gate(conn, binding=core.resolve_binding("file", str(art)))
+
+    with pytest.raises(JanusError, match="ruling-time rebinding was disabled"):
+        core.close_gate(conn, g, state="approved", reason="rule anyway",
+                        actor="kevin", rebind=False)
+
+    assert core.get_gate(conn, g)["state"] == "open"
+
+
 @pytest.mark.parametrize("state", core.RULED_STATES)
 def test_the_database_refuses_a_digestless_ruling_on_a_bound_gate(
         conn, tmp_path, state):
@@ -1935,6 +1948,11 @@ def test_doctor_reports_a_legacy_bound_ruling_with_no_digest(tmp_path):
     assert r.returncode == 1, r.stdout
     assert f"integrity   {g} (approved)" in r.stdout, r.stdout
     assert "bound ruling has no ruling-time digest" in r.stdout, r.stdout
+
+    shown = _cli(db, "show", g).stdout
+    assert "binding matches: the bound bytes are the live bytes" in shown, shown
+    assert "binding matches: the ruled bytes are the live bytes" not in shown, shown
+    assert "ruled on bytes: NONE RECORDED" in shown, shown
 
 
 def test_doctor_does_not_call_inline_text_unverifiable(tmp_path):
