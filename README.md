@@ -1,5 +1,7 @@
 # Janus
 
+[![CI](https://github.com/Ayyitskevin/Janus/actions/workflows/ci.yml/badge.svg)](https://github.com/Ayyitskevin/Janus/actions/workflows/ci.yml)
+
 **Every gate, both faces.**
 
 Janus is a local-first ledger of the decisions an AI fleet is waiting on a human
@@ -46,6 +48,22 @@ Four fields are mandatory and the schema refuses a gate without them. Bind the
 bytes with `--bind-kind file|git|text --bind <locator>`; offer alternatives with
 repeatable `--option id:label[:detail]`, marking your recommendation with a
 trailing `*` on the id. Full guidance lives in the fleet `janus` skill.
+
+## Development
+
+Janus declares Python 3.11+ support; CI exercises 3.11 through the current
+stable line, 3.14. A fresh clone can install the test toolchain and run the same
+gate CI uses:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e '.[test]'
+./scripts/check.sh
+```
+
+The gate compiles the package and runs every invariant test. Keep it green
+before pushing; CI repeats it on every branch push and pull request.
 
 ## Why this exists
 
