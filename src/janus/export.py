@@ -86,7 +86,7 @@ def _sha256(value: Any) -> str:
 
 
 def _connect_read_only(db_path: Path | None) -> sqlite3.Connection:
-    path = Path(db_path or core.DEFAULT_DB).expanduser().absolute()
+    path = core.storage_path(db_path)
     try:
         path.lstat()
     except FileNotFoundError:

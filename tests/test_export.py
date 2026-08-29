@@ -384,11 +384,11 @@ def test_export_uses_the_same_storage_identity_boundary(tmp_path: Path):
     original = db.read_bytes()
 
     directory.chmod(0o777)
-    with pytest.raises(JanusError, match="directory mode 0700"):
+    with pytest.raises(JanusError, match=r"directory mode 0777 \(expected 0700\)"):
         stable_export.export_gates(db)
 
     directory.chmod(0o1777)
-    with pytest.raises(JanusError, match="directory mode 0700"):
+    with pytest.raises(JanusError, match=r"directory mode 1777 \(expected 0700\)"):
         stable_export.export_gates(db)
     directory.chmod(0o700)
 

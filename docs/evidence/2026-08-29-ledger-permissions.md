@@ -72,12 +72,21 @@ Invariant tests additionally prove:
   tracebacks;
 - descriptor-close failures remain structured, and cannot preempt exact-inode
   cleanup after failed hardening;
+- descriptor inspection failure retains an already-private entry for operator
+  inspection, while a failed post-create identity check refuses to unlink an
+  entry whose identity is uncertain;
 - a failed descriptor hardening removes the exact empty file Janus created;
+- a broad directory appearing during parent creation is refused;
+- if an existing database disappears after preflight, `mode=rw` refuses rather
+  than recreating it;
 - rollback-journal identity is inspected before `doctor` opens SQLite;
 - stable export refuses replaceable directories, database/directory symlinks,
   hard links, and sidecar type hazards without creating or migrating storage;
 - `doctor` exits `1` on broad existing storage while its modes remain
   byte-for-byte unchanged;
+- `doctor` exits `1` without creating a missing ledger, reports a storage
+  finding exactly once, and does not mislabel migration-integrity failure as a
+  permission problem;
 - `doctor` exits `0` and prints the exact `0700`/`0600` contract for a private
   family.
 
@@ -109,7 +118,7 @@ The final descriptor fault injection found `close(2)` could override that
 structured refusal and skip failed-hardening cleanup. Descriptor invalidation
 is now centralized; cleanup runs even when close also reports an error.
 
-After implementation, the exact full repository gate passed **124 tests**. A
+After implementation, the exact full repository gate passed **131 tests**. A
 descriptor-hardening mutation then produced one failure under umask `777` while
 the `000` case still passed; restoring the exact candidate returned both cases
 to green. A non-editable wheel installed into a clean Python 3.12 environment;

@@ -748,7 +748,7 @@ def cmd_doctor(a, conn, *, open_blocker: str | None = None) -> int:
     else:
         print("storage     private (directory 0700; database family 0600; owner only)")
     if conn is None:
-        print("ledger      checks skipped — storage identity is unsafe to open")
+        print("ledger      checks skipped — storage is unavailable or unsafe to open")
         return 1
     versions = [r["version"] for r in conn.execute(
         "SELECT version FROM schema_migrations ORDER BY version")]
@@ -917,9 +917,15 @@ def main(argv: list[str] | None = None) -> int:
             return args.fn(args)
         if args.cmd == "doctor":
             try:
+                open_blocker = core.storage_open_blocker(args.db)
+            except core.StorageBoundaryError as e:
+                return args.fn(args, None, open_blocker=e.finding)
+            if open_blocker:
+                return args.fn(args, None, open_blocker=open_blocker)
+            try:
                 conn = core.connect(args.db)
-            except JanusError as e:
-                return args.fn(args, None, open_blocker=str(e))
+            except core.StorageBoundaryError as e:
+                return args.fn(args, None, open_blocker=e.finding)
             return args.fn(args, conn)
         conn = core.connect(args.db)
         return args.fn(args, conn)

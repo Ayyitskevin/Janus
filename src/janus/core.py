@@ -34,6 +34,14 @@ class JanusError(RuntimeError):
     """A refusal the operator should read, not a stack trace."""
 
 
+class StorageBoundaryError(JanusError):
+    """A storage refusal, with the unadorned finding retained for diagnostics."""
+
+    def __init__(self, message: str, *, finding: str | None = None) -> None:
+        super().__init__(message)
+        self.finding = finding or message
+
+
 def now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -170,6 +178,12 @@ def verify_binding(kind: str, locator: str, expected: str) -> tuple[bool | None,
 
 
 # ------------------------------------------------------------ database ----
+def storage_path(db_path: Path | None = None) -> Path:
+    """Return one absolute, lexically normalized path without following links."""
+    expanded = Path(db_path or DEFAULT_DB).expanduser()
+    return Path(os.path.abspath(expanded))
+
+
 def _checksum(sql: str) -> str:
     return hashlib.sha256(sql.encode()).hexdigest()
 
@@ -181,14 +195,16 @@ def _lstat(path: Path) -> os.stat_result | None:
         return None
     except OSError as exc:
         detail = exc.strerror or type(exc).__name__
-        raise JanusError(f"cannot inspect storage path {path}: {detail}") from exc
+        raise StorageBoundaryError(
+            f"cannot inspect storage path {path}: {detail}"
+        ) from exc
 
 
 def _effective_uid() -> int:
     try:
         return os.geteuid()
     except AttributeError as exc:
-        raise JanusError(
+        raise StorageBoundaryError(
             "ledger privacy requires POSIX ownership and mode semantics"
         ) from exc
 
@@ -226,7 +242,7 @@ def _directory_chain_finding(
             return f"ledger directory is not owned by process uid {expected_uid}: {leaf}"
         if leaf_mode != PRIVATE_DIRECTORY_MODE:
             return (
-                f"new ledger requires directory mode 0700, found {leaf_mode:04o}: {leaf}"
+                f"ledger directory mode {leaf_mode:04o} (expected 0700): {leaf}"
             )
 
     # A writable parent controls the name of its child. Sticky directories such
@@ -277,7 +293,9 @@ def _create_private_parents(parent: Path) -> None:
     missing, _ = _missing_parents(parent)
     finding = _new_storage_parent_finding(parent)
     if finding:
-        raise JanusError(f"cannot create a private ledger: {finding}")
+        raise StorageBoundaryError(
+            f"cannot create a private ledger: {finding}", finding=finding
+        )
     for directory in reversed(missing):
         try:
             directory.mkdir(mode=PRIVATE_DIRECTORY_MODE)
@@ -290,13 +308,14 @@ def _create_private_parents(parent: Path) -> None:
                 or info.st_uid != _effective_uid()
                 or stat.S_IMODE(info.st_mode) != PRIVATE_DIRECTORY_MODE
             ):
-                raise JanusError(
-                    f"cannot create a private ledger: unsafe directory appeared: {directory}"
+                finding = f"unsafe directory appeared: {directory}"
+                raise StorageBoundaryError(
+                    f"cannot create a private ledger: {finding}", finding=finding
                 )
             continue
         except OSError as exc:
             detail = exc.strerror or type(exc).__name__
-            raise JanusError(
+            raise StorageBoundaryError(
                 f"cannot create ledger directory {directory}: {detail}"
             ) from exc
         # mkdir combines mode with umask. Widen only the directory this process
@@ -306,12 +325,14 @@ def _create_private_parents(parent: Path) -> None:
             directory.chmod(PRIVATE_DIRECTORY_MODE)
         except OSError as exc:
             detail = exc.strerror or type(exc).__name__
-            raise JanusError(
+            raise StorageBoundaryError(
                 f"cannot secure new ledger directory {directory}: {detail}"
             ) from exc
     finding = _directory_chain_finding(parent, private_leaf=True)
     if finding:
-        raise JanusError(f"cannot create a private ledger: {finding}")
+        raise StorageBoundaryError(
+            f"cannot create a private ledger: {finding}", finding=finding
+        )
 
 
 def _unlink_created_file(path: Path, created: os.stat_result) -> bool:
@@ -339,12 +360,15 @@ def _create_private_database(path: Path) -> None:
     try:
         descriptor = os.open(path, flags, PRIVATE_FILE_MODE)
     except FileExistsError as exc:
-        raise JanusError(
-            f"database path appeared during private creation; inspect and retry: {path}"
+        finding = f"database path appeared during private creation: {path}"
+        raise StorageBoundaryError(
+            f"{finding}; inspect and retry", finding=finding
         ) from exc
     except OSError as exc:
         detail = exc.strerror or type(exc).__name__
-        raise JanusError(f"cannot create ledger file {path}: {detail}") from exc
+        raise StorageBoundaryError(
+            f"cannot create ledger file {path}: {detail}"
+        ) from exc
 
     def close_descriptor() -> OSError | None:
         nonlocal descriptor
@@ -364,7 +388,7 @@ def _create_private_database(path: Path) -> None:
         close_detail = ""
         if close_error:
             close_detail = f"; descriptor close also failed: {close_error}"
-        raise JanusError(
+        raise StorageBoundaryError(
             f"cannot inspect newly created ledger {path}: {detail}{close_detail}; "
             "the private entry was retained for operator inspection"
         ) from exc
@@ -388,10 +412,12 @@ def _create_private_database(path: Path) -> None:
         suffix = "" if removed else "; the created entry could not be safely removed"
         if close_error:
             suffix += f"; descriptor close also failed: {close_error}"
-        raise JanusError(f"cannot secure new ledger {path}{suffix}") from hardening_error
+        raise StorageBoundaryError(
+            f"cannot secure new ledger {path}{suffix}"
+        ) from hardening_error
     if close_error:
         detail = close_error.strerror or type(close_error).__name__
-        raise JanusError(
+        raise StorageBoundaryError(
             f"cannot finalize new ledger {path}: {detail}; "
             "the private entry was retained for operator inspection"
         ) from close_error
@@ -408,12 +434,14 @@ def _create_private_database(path: Path) -> None:
     ):
         removed = _unlink_created_file(path, created)
         suffix = "" if removed else "; the created entry could not be safely removed"
-        raise JanusError(f"new ledger failed its identity check: {path}{suffix}")
+        raise StorageBoundaryError(
+            f"new ledger failed its identity check: {path}{suffix}"
+        )
 
 
 def storage_open_blocker(db_path: Path | None = None) -> str | None:
     """Return a path-identity reason SQLite must not open, without repairing it."""
-    path = Path(db_path or DEFAULT_DB).expanduser().absolute()
+    path = storage_path(db_path)
     info = _lstat(path)
     if info is None:
         return f"database is missing: {path}"
@@ -470,7 +498,7 @@ def storage_privacy_findings(db_path: Path | None = None) -> list[str]:
     Inspection is deliberately non-repairing. Existing storage may be live;
     changing it inside ``doctor`` would turn a diagnostic into a migration.
     """
-    path = Path(db_path or DEFAULT_DB).expanduser().absolute()
+    path = storage_path(db_path)
     findings: list[str] = []
     expected_uid = _effective_uid()
 
@@ -532,25 +560,45 @@ def storage_privacy_findings(db_path: Path | None = None) -> list[str]:
 
 def connect(db_path: Path | None = None) -> sqlite3.Connection:
     """Open (creating if needed) and migrate forward. Never migrates backward."""
-    path = Path(db_path or DEFAULT_DB).expanduser().absolute()
+    path = storage_path(db_path)
     initially_missing = _lstat(path) is None
     if initially_missing:
         blocker = _new_storage_parent_finding(path.parent)
         if blocker:
-            raise JanusError(f"refusing unsafe new ledger path: {blocker}")
+            raise StorageBoundaryError(
+                f"refusing unsafe new ledger path: {blocker}", finding=blocker
+            )
         _create_private_parents(path.parent)
         _create_private_database(path)
     blocker = storage_open_blocker(path)
     if blocker:
-        raise JanusError(f"refusing unsafe ledger path: {blocker}")
+        raise StorageBoundaryError(
+            f"refusing unsafe ledger path: {blocker}", finding=blocker
+        )
     try:
-        conn = sqlite3.connect(path)
+        conn = sqlite3.connect(f"{path.as_uri()}?mode=rw", uri=True)
     except sqlite3.Error as exc:
-        raise JanusError(f"cannot open ledger {path}: {exc}") from exc
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
-    migrate(conn)
+        raise StorageBoundaryError(f"cannot open ledger {path}: {exc}") from exc
+
+    def close_after_failed_setup() -> None:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            # Preserve the refusal that explains why setup failed. Cleanup must
+            # not replace the primary operator-facing diagnosis.
+            pass
+
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA journal_mode = WAL")
+        migrate(conn)
+    except JanusError:
+        close_after_failed_setup()
+        raise
+    except sqlite3.Error as exc:
+        close_after_failed_setup()
+        raise JanusError(f"cannot initialize ledger {path}: {exc}") from exc
     return conn
 
 

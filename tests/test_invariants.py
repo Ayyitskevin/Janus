@@ -151,8 +151,14 @@ def test_new_ledger_refuses_replaceable_existing_directory(tmp_path):
     broad = tmp_path / "broad"
     broad.mkdir(mode=0o700)
     broad.chmod(0o777)
-    with pytest.raises(JanusError, match="requires directory mode 0700"):
+    with pytest.raises(JanusError, match=r"ledger directory mode 0777 \(expected 0700\)"):
         core.connect(broad / "janus.db")
+
+    with pytest.raises(
+        core.StorageBoundaryError,
+        match="permits another OS user to replace a child entry",
+    ):
+        core.connect(broad / "not-there-yet" / "janus.db")
 
     outer = tmp_path / "outer"
     outer.mkdir(mode=0o700)
@@ -167,13 +173,13 @@ def test_new_ledger_refuses_replaceable_existing_directory(tmp_path):
     conn = core.connect(existing_db)
     conn.close()
     existing.chmod(0o777)
-    with pytest.raises(JanusError, match="directory mode 0700"):
+    with pytest.raises(JanusError, match=r"directory mode 0777 \(expected 0700\)"):
         core.connect(existing_db)
 
     # Sticky protection covers an existing database name, but not absent
     # WAL/SHM/journal names SQLite may create next.
     existing.chmod(0o1777)
-    with pytest.raises(JanusError, match="directory mode 0700"):
+    with pytest.raises(JanusError, match=r"directory mode 1777 \(expected 0700\)"):
         core.connect(existing_db)
 
 
@@ -250,6 +256,50 @@ def test_descriptor_close_errors_are_structured_and_do_not_skip_cleanup(
     assert not combined.exists()
 
 
+def test_fstat_failure_retains_a_private_file_and_returns_a_storage_refusal(
+    tmp_path, monkeypatch
+):
+    db = tmp_path / "fstat.db"
+
+    def refuse_fstat(descriptor):
+        raise OSError(errno.EIO, "test fstat refusal")
+
+    monkeypatch.setattr(core.os, "fstat", refuse_fstat)
+    with pytest.raises(
+        core.StorageBoundaryError,
+        match="cannot inspect newly created ledger.*retained for operator inspection",
+    ):
+        core._create_private_database(db)
+
+    assert db.exists()
+    assert _mode(db) == 0o600
+
+
+def test_failed_post_create_identity_check_refuses_to_unlink_an_uncertain_entry(
+    tmp_path, monkeypatch
+):
+    db = tmp_path / "identity.db"
+    real_lstat = core._lstat
+
+    def report_an_extra_link(path):
+        info = real_lstat(path)
+        if info is None:
+            return None
+        values = list(info)
+        values[3] = 2
+        return os.stat_result(values)
+
+    monkeypatch.setattr(core, "_lstat", report_an_extra_link)
+    with pytest.raises(
+        core.StorageBoundaryError,
+        match="failed its identity check.*could not be safely removed",
+    ):
+        core._create_private_database(db)
+
+    assert db.exists(), "an entry with uncertain identity must not be unlinked"
+    assert _mode(db) == 0o600
+
+
 def test_missing_database_cannot_appear_between_preflight_and_creation(tmp_path, monkeypatch):
     db = tmp_path / "private" / "janus.db"
     target = tmp_path / "broad-target.db"
@@ -263,6 +313,69 @@ def test_missing_database_cannot_appear_between_preflight_and_creation(tmp_path,
     with pytest.raises(JanusError, match="appeared during private creation"):
         core.connect(db)
     assert not target.exists()
+
+
+def test_unsafe_directory_cannot_appear_during_private_parent_creation(
+    tmp_path, monkeypatch
+):
+    db = tmp_path / "raced" / "janus.db"
+    raced_directory = db.parent
+    real_mkdir = Path.mkdir
+
+    def insert_broad_directory(path, mode=0o777, parents=False, exist_ok=False):
+        if path == raced_directory:
+            real_mkdir(path, mode=0o700, parents=parents, exist_ok=exist_ok)
+            path.chmod(0o777)
+            raise FileExistsError(errno.EEXIST, "test competing mkdir", str(path))
+        return real_mkdir(path, mode=mode, parents=parents, exist_ok=exist_ok)
+
+    monkeypatch.setattr(core.Path, "mkdir", insert_broad_directory)
+    with pytest.raises(
+        core.StorageBoundaryError,
+        match="unsafe directory appeared",
+    ):
+        core.connect(db)
+
+    assert not db.exists()
+
+
+def test_existing_database_cannot_be_recreated_if_it_disappears_after_preflight(
+    tmp_path, monkeypatch
+):
+    db = tmp_path / "private" / "janus.db"
+    conn = core.connect(db)
+    conn.close()
+    real_blocker = core.storage_open_blocker
+
+    def approve_then_remove(path):
+        blocker = real_blocker(path)
+        assert blocker is None
+        db.unlink()
+        return None
+
+    monkeypatch.setattr(core, "storage_open_blocker", approve_then_remove)
+    with pytest.raises(core.StorageBoundaryError, match="cannot open ledger"):
+        core.connect(db)
+
+    assert not db.exists(), "mode=rw must refuse rather than recreate a vanished ledger"
+
+
+def test_storage_path_normalizes_dot_dot_lexically_without_following_a_link(tmp_path):
+    directory = tmp_path / "private"
+    directory.mkdir(mode=0o700)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir(mode=0o700)
+    link = directory / "unused"
+    link.symlink_to(elsewhere, target_is_directory=True)
+    db_with_dot_dot = link / ".." / "janus.db"
+
+    conn = core.connect(db_with_dot_dot)
+    conn.close()
+
+    assert (directory / "janus.db").exists()
+    assert link.is_symlink(), "the path must exercise lexical, not resolved, normalization"
+    assert not (tmp_path / "janus.db").exists()
+    assert core.storage_path(db_with_dot_dot) == directory / "janus.db"
 
 
 def test_storage_creation_os_errors_are_structured_cli_refusals(
@@ -309,7 +422,36 @@ def test_doctor_fails_loudly_without_repairing_existing_broad_modes(tmp_path):
     assert result.returncode == 1, result.stdout + result.stderr
     assert "storage     FAILED" in result.stdout
     assert "no permissions were changed" in result.stdout
+    assert result.stdout.count("database mode 0644") == 1
     assert (_mode(directory), _mode(db)) == before
+
+
+def test_doctor_reports_a_missing_ledger_without_creating_it(tmp_path):
+    db = tmp_path / "missing.db"
+
+    result = _cli(db, "doctor")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "database is missing" in result.stdout
+    assert "checks skipped" in result.stdout
+    assert not db.exists()
+
+
+def test_doctor_does_not_mislabel_migration_integrity_as_storage(tmp_path, capsys):
+    from janus import cli
+
+    db = tmp_path / "janus.db"
+    conn = core.connect(db)
+    conn.execute("UPDATE schema_migrations SET checksum = 'tampered'")
+    conn.commit()
+    conn.close()
+
+    assert cli.main(["--db", str(db), "doctor"]) == 2
+    output = capsys.readouterr()
+    assert "migration" in output.err
+    assert "has changed since it was applied" in output.err
+    assert "storage     FAILED" not in output.out
+    assert "restrict or relocate" not in output.out
 
 
 def test_doctor_accepts_a_private_ledger_family(tmp_path):
@@ -517,8 +659,11 @@ def test_an_observation_never_changes_state(conn):
 
 
 def test_doctor_exits_zero_on_a_healthy_ledger(tmp_path):
+    db = tmp_path / "d.db"
+    conn = core.connect(db)
+    conn.close()
     r = subprocess.run(
-        [sys.executable, "-m", "janus.cli", "--db", str(tmp_path / "d.db"), "doctor"],
+        [sys.executable, "-m", "janus.cli", "--db", str(db), "doctor"],
         capture_output=True, text=True,
         env={
             "PATH": "/usr/bin:/bin",
@@ -1094,8 +1239,11 @@ def test_an_installed_copy_and_a_working_tree_are_told_apart(git_repo, tmp_path)
 
 
 def test_doctor_says_where_its_code_came_from(tmp_path):
+    db = tmp_path / "d.db"
+    conn = core.connect(db)
+    conn.close()
     r = subprocess.run(
-        [sys.executable, "-m", "janus.cli", "--db", str(tmp_path / "d.db"), "doctor"],
+        [sys.executable, "-m", "janus.cli", "--db", str(db), "doctor"],
         capture_output=True, text=True,
         env={"PATH": "/usr/bin:/bin",
              "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
