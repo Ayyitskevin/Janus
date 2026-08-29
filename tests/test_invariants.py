@@ -939,6 +939,42 @@ def test_single_check_yes_previews_then_records_the_effective_command(tmp_path):
     assert observation is not None and observation["command"] == f"touch {effective}"
 
 
+def test_single_check_escapes_terminal_controls_without_changing_execution(tmp_path):
+    """A preview must not let stored text repaint what the operator consents to.
+
+    Carriage return is enough to move the cursor back over the gate id, kind,
+    and hidden command prefix in a real terminal.  The displayed form must be
+    terminal-safe and unambiguous while the exact stored string still crosses
+    the already-confirmed execution boundary.
+    """
+    db = tmp_path / "single.db"
+    conn = core.connect(db)
+    marker = tmp_path / "CONTROL_PREFIX_RAN"
+    command = f"touch {marker} #\r\x1b[2K\u202e  echo benign-status-check"
+    g = _gate(conn, decay_check=command)
+
+    r = subprocess.run(
+        [sys.executable, "-m", "janus.cli", "--db", str(db), "check", g, "--yes"],
+        capture_output=True,
+        stdin=subprocess.DEVNULL,
+        env={
+            "PATH": "/usr/bin:/bin",
+            "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
+            "HOME": str(tmp_path),
+            "USER": "tester",
+        },
+    )
+
+    assert r.returncode == 0, r.stderr
+    assert b"\r" not in r.stdout, "stored carriage return reached the terminal"
+    assert b"\x1b" not in r.stdout, "stored ANSI escape reached the terminal"
+    assert "\u202e".encode() not in r.stdout, "stored bidi override reached the terminal"
+    assert ascii(command).encode() in r.stdout
+    assert marker.exists()
+    observation = core.latest_observation(conn, g, "decay")
+    assert observation is not None and observation["command"] == command
+
+
 def test_single_check_prints_the_command_before_calling_observe(conn, capsys, monkeypatch):
     from janus import cli
 

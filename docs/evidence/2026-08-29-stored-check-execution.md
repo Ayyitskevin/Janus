@@ -4,10 +4,13 @@
 
 Running one stored check must cross the same visible, explicit execution
 boundary as running the board's batch. Janus prints each effective command in
-full, flushes the preview, and then either receives interactive confirmation or
-requires `--yes` from an unattended caller. Consent applies only to the exact
-command displayed: a revision visible at the final load fails closed, while a
-later commit cannot substitute its unseen bytes and applies to the next run.
+full through an unambiguous terminal-safe escaped representation, flushes the
+preview, and then either receives interactive confirmation or requires `--yes`
+from an unattended caller. Quotes delimit the command and escapes distinguish
+literal backslashes from terminal controls; the original stored string, not the
+representation, executes after consent. Consent applies only to that command: a
+revision visible at the final load fails closed, while a later commit cannot
+substitute its unseen bytes and applies to the next run.
 
 This is a security boundary around intentional same-user shell execution. It is
 not shell sanitization, a sandbox, or authority to execute a gate written by a
@@ -48,7 +51,9 @@ The invariant suite covers these distinct cases:
 11. stdout is flushed before the execution function is called;
 12. the board passes each previewed command into the same identity guard; and
 13. the board's existing unattended refusal and full-preview behavior remains
-    unchanged through the shared implementation.
+    unchanged through the shared implementation;
+14. a carriage return capable of repainting the prompt is rendered as inert
+    `\\r`, while the exact stored command still executes and is recorded.
 
 ## Assumptions and non-goals
 
@@ -58,8 +63,9 @@ The invariant suite covers these distinct cases:
   make that text safe and does not suppress its display.
 - This change adds no timer, remote write, privilege boundary, schema change,
   or new dependency.
-- Terminal control-character hardening is separate. The live command set has
-  no newlines, and lower-trust writers remain out of scope by design.
+- The live command set has no newlines, but that measurement is not a security
+  assumption: all ASCII controls and non-ASCII code points are escaped before
+  display. Lower-trust writers remain out of scope by design.
 
 ## Verification evidence
 
@@ -74,7 +80,12 @@ The invariant suite covers these distinct cases:
 - With both the explicit stdout flush and the board's expected-command argument
   deliberately removed, their two focused regressions failed. Restoring both
   makes the tests pass.
-- `./scripts/check.sh` compiles the package and passes 105 tests: all 76
+- A late independent review supplied a real-terminal carriage-return repaint
+  reproducer. The raw-byte regression failed against the reviewed candidate
+  because `\\r` reached stdout; changing the shared preview to Python's
+  reversible ASCII representation made it pass without changing the executed
+  or recorded command.
+- `./scripts/check.sh` compiles the package and passes 106 tests: all 77
   invariant tests plus the 29 stable-export tests now present on main.
 - A clean Python 3.12 virtual environment installed the candidate as a regular
   site-packages copy (not editable). Its unattended call exited 2, printed the

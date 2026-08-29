@@ -49,10 +49,11 @@ write.
 
 - ~~`decay.check` executed on demand~~ — `janus check <id>` (M1) and
   `janus board --check`, which runs every check that exists. Never on a timer.
-  Both paths show the effective commands in full and confirm before execution;
-  unattended callers must pass `--yes`, and an unseen revision cannot substitute
-  different bytes after preview. Exit status is recorded as an observation;
-  observations never change state.
+  Both paths show the effective commands in full using a terminal-safe escaped
+  representation and confirm before execution; unattended callers must pass
+  `--yes`, terminal controls cannot repaint a hidden prefix, and an unseen
+  revision cannot substitute different bytes after preview. Exit status is
+  recorded as an observation; observations never change state.
 - ~~`janus board`~~ — the one screen. Sorted by observed decay, then by a passed
   horizon, then by the longest wait; no priority field exists to sort by.
   Rank order is `landed` → `unchecked`/`unmeasured` → `not yet`: evidence of

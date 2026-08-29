@@ -240,7 +240,11 @@ def _preview_and_confirm_checks(pending: list[tuple[dict, str]], *, yes: bool) -
     """Display executable ledger text in full, then obtain consent to run it."""
     print(f"about to run {len(pending)} command(s) stored in the ledger:")
     for gate, kind in pending:
-        print(f"  {gate['id']}  {kind:<8}  {_effective_command(gate, kind)}")
+        # Stored text may contain carriage returns, ANSI escapes, bidi marks,
+        # or other terminal controls.  ascii() is reversible for the Python
+        # string and emits only inert ASCII, including escaped backslashes, so
+        # the preview cannot repaint a benign command over a hidden prefix.
+        print(f"  {gate['id']}  {kind:<8}  {ascii(_effective_command(gate, kind))}")
     # In a terminal, newlines are normally enough. An unattended caller may be
     # streaming stdout, though, so make the preview observable before crossing
     # the execution boundary rather than merely ordering two buffered writes.
