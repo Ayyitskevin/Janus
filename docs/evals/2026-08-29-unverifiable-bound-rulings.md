@@ -79,10 +79,14 @@ The new refusal applies to external bindings whose bytes cannot be re-derived.
 
 - CLI approve and refuse both fail when a bound artifact cannot be read.
 - The core refuses the same write when called without the CLI.
-- SQLite refuses a direct invalid insert.
+- SQLite refuses direct invalid approval and refusal inserts.
 - The gate remains open and no ruling row is written.
 - A drifted but readable artifact can still be ruled on with explicit `--yes`,
   and the ruling stores the digest of the bytes actually reviewed.
-- A legacy digestless ruling remains visible as `NONE RECORDED`.
+- A legacy digestless ruling remains visible as `NONE RECORDED` in `show` and
+  as an integrity failure in `doctor`, even while the raised artifact remains
+  readable.
+- A permission-denied external binding produces a structured `CANNOT VERIFY`
+  refusal rather than a filesystem traceback.
 - An inline-text binding can still be ruled on and records its digest.
 - A non-editable package install includes and applies migration 0003.
