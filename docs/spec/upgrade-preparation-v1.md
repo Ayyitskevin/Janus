@@ -35,6 +35,7 @@ python scripts/prepare_upgrade.py \
 The output parent must already exist, be owned by the caller, and have mode
 `0700`. The output path must not exist. The tool refuses a dirty checkout,
 symlinked path component, database hard link, wrong owner, missing database,
+cross-account source writes/replacement, an uninterpreted extended POSIX ACL,
 unknown rollback commit, or a rollback that is not an ancestor.
 
 Candidate and rollback artifacts are built from `git archive` of the recorded
@@ -69,7 +70,8 @@ cleanup failure is reported rather than hidden.
 - Candidate migration preserved all earlier migration version/checksum pairs
   plus the row counts and canonical content digest of every ledger table.
 - The rollback wheel opened the migrated copy and observed the same counts and
-  content digests.
+  content digests. Its separately reported packaged-migration list makes
+  candidate-wheel reuse visible even when both packages share a version string.
 
 It does **not** prove that the operator selected the correct installed commit,
 that the candidate is bug-free, that a future deployment will succeed, or that

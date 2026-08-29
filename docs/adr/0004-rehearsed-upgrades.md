@@ -43,9 +43,12 @@ that resembles a successful bundle. The manifest explicitly records
 Preparation deliberately admits an existing database whose modes are broader
 than Janus's current `0700`/`0600` contract: creating the safe backup is the
 first step out of that legacy state. It still refuses symlinks, hard links,
-wrong owners, unsafe ancestor replacement, and database identity change. It
-reports the observed modes before and after rather than silently repairing
-them.
+wrong owners, unsafe ancestor replacement, database identity change, extended
+POSIX ACLs, and any world-writable source entry. A group-writable source is
+admitted only when account enumeration proves that no other non-root account
+receives that group's permissions. It reports the observed modes before and
+after rather than silently repairing them. This maintenance exception does not
+weaken the exact-mode boundary used by ordinary commands and stable export.
 
 ## Consequences
 
@@ -77,3 +80,7 @@ them.
 - **Require the legacy ledger to pass current privacy checks before backup.**
   Rejected: it would make the only safe escape path unavailable to the exact
   installed state that needs it. Identity hazards remain hard refusals.
+- **Duplicate the ordinary connector's exact-mode check.** Rejected: that would
+  make the legacy escape path impossible. Preparation repeats the pathname
+  identity checks because it must not import uninstalled candidate code, then
+  adds parity tests plus the narrower private-group exception above.

@@ -35,6 +35,17 @@ files to obtain a safe `mode=ro` snapshot. Export never creates the main
 database or changes logical rows, and it post-checks the resulting family so
 that coordination cannot silently weaken the owner-only boundary.
 
+Upgrade preparation is the one narrower maintenance exception for legacy
+storage that predates this contract. It may read a broader existing family to
+make the private backup needed to leave that state, but ordinary Janus commands
+remain blocked. Preparation still refuses world-writable directories/files,
+group-writable entries when that group contains another non-root account,
+extended POSIX ACLs it cannot interpret, symlinks, hard links, wrong owners,
+and replaceable ancestors. A private primary group with no other account may
+therefore explain legacy `0775`/`0644`; those modes are recorded, never repaired
+or accepted as the normal ledger boundary. Same-OS-user and root replacement
+remain outside the stated threat model.
+
 This is inherited, not chosen, and it is why Janus must never enter the
 permission path. A system that treats a Janus read as sufficient grounds to act
 would be trusting a store that a same-OS-user process can rewrite.

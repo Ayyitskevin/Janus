@@ -9,9 +9,11 @@ proof that both candidate and rollback code can read a migrated rehearsal copy.
 from __future__ import annotations
 
 import argparse
+import grp
 import hashlib
 import json
 import os
+import pwd
 import shutil
 import sqlite3
 import stat
@@ -197,6 +199,59 @@ def _directory_chain_finding(leaf: Path, *, private_leaf: bool) -> str | None:
     return None
 
 
+def _other_group_accounts(group_id: int) -> list[str]:
+    """Return non-root, non-caller accounts that receive ``group_id`` permissions."""
+    current_uid = os.geteuid()
+    names = {
+        account.pw_name
+        for account in pwd.getpwall()
+        if account.pw_gid == group_id and account.pw_uid not in {0, current_uid}
+    }
+    try:
+        members = grp.getgrgid(group_id).gr_mem
+    except KeyError:
+        # A file can retain an orphaned numeric group. No current account gets
+        # that group's bits; root remains outside Janus's OS-user threat model.
+        members = []
+    for name in members:
+        try:
+            member_uid = pwd.getpwnam(name).pw_uid
+        except KeyError:
+            names.add(name)
+            continue
+        if member_uid not in {0, current_uid}:
+            names.add(name)
+    return sorted(names)
+
+
+def _source_permission_finding(path: Path, *, label: str, directory: bool) -> str | None:
+    """Refuse source entries another enumerated non-root OS user could mutate."""
+    try:
+        info = path.lstat()
+        attributes = os.listxattr(path, follow_symlinks=False)
+    except OSError as exc:
+        return f"cannot prove {label} permissions: {path}: {exc}"
+    if any(name in {"system.posix_acl_access", "system.posix_acl_default"} for name in attributes):
+        return f"{label} has an extended POSIX ACL that preparation does not interpret: {path}"
+
+    mode = stat.S_IMODE(info.st_mode)
+    group_accounts = _other_group_accounts(info.st_gid)
+    if directory:
+        if mode & 0o003 == 0o003:
+            return f"{label} permits another OS user to replace a child entry: {path}"
+        if mode & 0o030 == 0o030 and group_accounts:
+            return (
+                f"{label} permits group accounts to replace a child entry "
+                f"({', '.join(group_accounts)}): {path}"
+            )
+    else:
+        if mode & 0o002:
+            return f"{label} is writable by another OS user: {path}"
+        if mode & 0o020 and group_accounts:
+            return f"{label} is writable by group accounts ({', '.join(group_accounts)}): {path}"
+    return None
+
+
 def _source_family(db: Path) -> dict[str, dict[str, object]]:
     if not db.is_absolute():
         raise PreparationError("--db must be an absolute path")
@@ -204,7 +259,15 @@ def _source_family(db: Path) -> dict[str, dict[str, object]]:
     if chain_finding:
         raise PreparationError(f"unsafe ledger path: {chain_finding}")
     family = {"directory": _identity(db.parent, label="ledger directory")}
+    directory_finding = _source_permission_finding(
+        db.parent, label="ledger directory", directory=True
+    )
+    if directory_finding:
+        raise PreparationError(directory_finding)
     family["database"] = _identity(db, label="database")
+    database_finding = _source_permission_finding(db, label="database", directory=False)
+    if database_finding:
+        raise PreparationError(database_finding)
     for suffix, label in (
         ("-wal", "WAL"),
         ("-shm", "shared memory"),
@@ -213,6 +276,9 @@ def _source_family(db: Path) -> dict[str, dict[str, object]]:
         path = Path(f"{db}{suffix}")
         if path.exists() or path.is_symlink():
             family[suffix[1:]] = _identity(path, label=label)
+            sidecar_finding = _source_permission_finding(path, label=label, directory=False)
+            if sidecar_finding:
+                raise PreparationError(sidecar_finding)
     return family
 
 
@@ -344,6 +410,7 @@ connection = core.connect(db)
 integrity = [row[0] for row in connection.execute('PRAGMA integrity_check')]
 migrations = [dict(row) for row in connection.execute(
     'SELECT version, checksum FROM schema_migrations ORDER BY version')]
+packaged_migrations = sorted(path.stem for path in core.MIGRATIONS_DIR.glob('*.sql'))
 counts = {table: connection.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]
           for table in ('gates', 'gate_options', 'rulings', 'observations',
                         'check_revisions', 'audit_events')}
@@ -359,7 +426,8 @@ for table in counts:
 connection.close()
 findings = core.storage_privacy_findings(db)
 print(json.dumps({'version': __version__, 'integrity': integrity,
-                  'migrations': migrations, 'counts': counts,
+                  'migrations': migrations, 'packaged_migrations': packaged_migrations,
+                  'counts': counts,
                   'content_sha256': content_sha256,
                   'storage_findings': findings}, sort_keys=True))
 """
@@ -377,6 +445,7 @@ connection = core.connect(db)
 integrity = [row[0] for row in connection.execute('PRAGMA integrity_check')]
 migrations = [row['version'] for row in connection.execute(
     'SELECT version FROM schema_migrations ORDER BY version')]
+packaged_migrations = sorted(path.stem for path in core.MIGRATIONS_DIR.glob('*.sql'))
 counts = {table: connection.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]
           for table in ('gates', 'gate_options', 'rulings', 'observations',
                         'check_revisions', 'audit_events')}
@@ -391,7 +460,8 @@ for table in counts:
     content_sha256[table] = hashlib.sha256(content).hexdigest()
 connection.close()
 print(json.dumps({'version': __version__, 'integrity': integrity,
-                  'migrations': migrations, 'counts': counts,
+                  'migrations': migrations, 'packaged_migrations': packaged_migrations,
+                  'counts': counts,
                   'content_sha256': content_sha256}, sort_keys=True))
 """
 
