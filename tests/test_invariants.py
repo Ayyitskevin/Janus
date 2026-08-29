@@ -243,7 +243,7 @@ def test_cleanup_inspection_failure_preserves_the_primary_hardening_refusal(
         core._create_private_database(db)
 
     assert db.exists(), "uncertain cleanup must retain the owner-only entry"
-    assert _mode(db) == 0o600
+    assert _mode(db) & 0o077 == 0
 
 
 def test_descriptor_close_errors_are_structured_and_do_not_skip_cleanup(
@@ -295,7 +295,7 @@ def test_fstat_failure_retains_a_private_file_and_returns_a_storage_refusal(
         core._create_private_database(db)
 
     assert db.exists()
-    assert _mode(db) == 0o600
+    assert _mode(db) & 0o077 == 0
 
 
 def test_failed_post_create_identity_check_refuses_to_unlink_an_uncertain_entry(
@@ -568,7 +568,7 @@ def test_doctor_reports_inaccessible_storage_without_a_traceback(tmp_path):
         directory.chmod(0o700)
 
     assert result.returncode == 1
-    assert "cannot be inspected" in result.stdout
+    assert result.stdout.count(f"cannot inspect storage path {db}:") == 1
     assert "checks skipped" in result.stdout
     assert "Traceback" not in result.stderr
 

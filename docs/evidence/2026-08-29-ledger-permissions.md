@@ -89,6 +89,8 @@ Invariant tests additionally prove:
 - `doctor` exits `1` without creating a missing ledger, reports a storage
   finding exactly once, and does not mislabel migration-integrity failure as a
   permission problem;
+- inaccessible database-family paths use the same inspection finding in the
+  refusal and diagnostic paths, so each path is reported once;
 - deletion after `doctor` begins opening is refused by its existing-only
   connector and does not recreate the database;
 - `doctor` exits `0` and prints the exact `0700`/`0600` contract for a private
