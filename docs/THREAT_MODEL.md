@@ -12,6 +12,14 @@ not isolate mutually untrusted processes running as that user. Any process able
 to reach the database can read every gate and write rulings; the boundary is the
 bind and the file permissions, nothing more.
 
+Janus therefore creates every missing ledger directory as `0700` and reserves a
+new database as `0600` before SQLite opens it. `doctor` checks the active
+database family—including WAL, shared-memory, and rollback-journal sidecars—for
+owner, regular-file type, exact mode, symlinks, and hard links. It does not
+repair an existing path: changing live filesystem state inside a diagnostic
+would hide an operational migration. A failed storage line is a deliberate
+operator action, not permission for Janus to chmod the world it found.
+
 This is inherited, not chosen, and it is why Janus must never enter the
 permission path. A system that treats a Janus read as sufficient grounds to act
 would be trusting a store that a same-OS-user process can rewrite.
@@ -109,4 +117,5 @@ models are read by people who skip contracts.
 
 Multi-user authorization, remote access, network exposure, encryption at rest,
 and protection against a hostile same-OS-user process. Protect the database with
-OS permissions and backups.
+OS permissions and backups; `doctor` makes the first half observable but does
+not make a backup policy.
