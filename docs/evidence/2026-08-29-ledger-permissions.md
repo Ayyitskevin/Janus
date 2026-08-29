@@ -11,8 +11,9 @@ or changing the live ledger's permissions.
 2. The main database and SQLite WAL/shared-memory sidecars can remain exactly
    `0600` across that same range.
 3. Existing broad storage can be diagnosed without a silent chmod.
-4. Type, symlink, and hard-link aliases are visible rather than summarized as
-   private.
+4. Missing paths, wrong identity, symlink, and hard-link aliases are visible
+   rather than summarized as private.
+5. A new ledger is refused when another OS user could replace its pathname.
 
 ## Before
 
@@ -54,14 +55,25 @@ findings.** Temporary directories were removed after the run.
 Invariant tests additionally prove:
 
 - `0775` directory and `0644` database modes are both named;
+- required missing paths and wrong owner/type findings are not flattened into
+  "private";
 - a second hard link is named with its observed link count;
-- a symbolic-link database path is refused as private evidence;
+- dangling database symlinks create no target under umasks `000` and `777`;
+- a symlink anywhere in a new ledger's directory chain creates no database;
+- replaceable existing parents are refused before database creation;
+- a failed descriptor hardening removes the exact empty file Janus created;
+- rollback-journal identity is inspected before `doctor` opens SQLite;
 - `doctor` exits `1` on broad existing storage while its modes remain
   byte-for-byte unchanged;
 - `doctor` exits `0` and prints the exact `0700`/`0600` contract for a private
   family.
 
-After implementation, the exact full repository gate passed **111 tests**. A
+The first fixed-point review correctly held the candidate: it reproduced a
+dangling-symlink bypass, creation within an attacker-writable directory,
+absence reported as private, and a wrong-type `doctor` crash before diagnosis.
+Each became an invariant test before the candidate was revised.
+
+After implementation, the exact full repository gate passed **118 tests**. A
 descriptor-hardening mutation then produced one failure under umask `777` while
 the `000` case still passed; restoring the exact candidate returned both cases
 to green. A non-editable wheel installed into a clean Python 3.12 environment;
