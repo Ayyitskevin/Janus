@@ -34,6 +34,9 @@ Read-only `lstat` measurement of the live mickey family found:
 The home directory is `0750` and the primary group currently has only Kevin as
 a member, so this is a direct-mode hardening finding rather than proof that
 another current account read the ledger. No live mode or database byte changed.
+Because the ledger directory itself is group-writable and non-sticky, the final
+candidate intentionally refuses to open it. Any later installation must be
+sequenced after human-approved backup and repair; this slice performs neither.
 
 ## Creation matrix
 
@@ -61,6 +64,8 @@ Invariant tests additionally prove:
 - dangling database symlinks create no target under umasks `000` and `777`;
 - a symlink anywhere in a new ledger's directory chain creates no database;
 - replaceable existing parents are refused before database creation;
+- an existing ledger in a writable non-sticky directory is refused, while the
+  equivalent sticky directory remains usable;
 - a failed descriptor hardening removes the exact empty file Janus created;
 - rollback-journal identity is inspected before `doctor` opens SQLite;
 - `doctor` exits `1` on broad existing storage while its modes remain
@@ -73,7 +78,11 @@ dangling-symlink bypass, creation within an attacker-writable directory,
 absence reported as private, and a wrong-type `doctor` crash before diagnosis.
 Each became an invariant test before the candidate was revised.
 
-After implementation, the exact full repository gate passed **118 tests**. A
+The repeated review held again because an existing ledger in a writable
+directory remained replaceable, and because an inaccessible path escaped as a
+traceback. Both now fail through structured diagnostics before SQLite opens.
+
+After implementation, the exact full repository gate passed **119 tests**. A
 descriptor-hardening mutation then produced one failure under umask `777` while
 the `000` case still passed; restoring the exact candidate returned both cases
 to green. A non-editable wheel installed into a clean Python 3.12 environment;

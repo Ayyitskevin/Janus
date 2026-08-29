@@ -47,17 +47,21 @@ Inspection never repairs. Existing directories and files are not chmodded by an
 ordinary open or by `doctor`; the output says so and exits nonzero. A human can
 then choose the maintenance window, backup, and exact permission change. This
 keeps feedback in Janus without turning a diagnostic into a hidden migration.
-Broad modes on an existing, regular, single-link, correctly owned database stay
-compatible; identity hazards (symlinks, wrong types or owners, and extra hard
-links) are refused before SQLite opens them. `doctor` prints those findings and
-skips checks that would require an unsafe open.
+Broad database or sidecar modes inside a replacement-safe directory remain
+diagnostic findings. A writable, non-sticky containing directory is different:
+another OS user can replace the inspected name before SQLite opens it, so Janus
+refuses all commands until the operator repairs or relocates that directory.
+Other identity hazards (symlinks, wrong types or owners, and extra hard links)
+are likewise refused before SQLite opens them. `doctor` prints those findings
+and skips checks that would require an unsafe open.
 
 ## Consequences
 
 - A new ledger remains private under every measured umask from `000` through
   `777`, including its live WAL and shared-memory files.
-- Existing broad storage becomes loud but keeps working, preserving adoption
-  while the owner schedules deliberate repair.
+- Existing broad file modes become loud but keep working only within a
+  replacement-safe directory. A replaceable directory fails closed until the
+  owner schedules deliberate repair.
 - Alternate locations no longer inherit unsafe creation defaults or
   replaceable parent paths silently.
 - Database-family symlinks, wrong types/owners, and hard-link aliases are
@@ -72,10 +76,11 @@ skips checks that would require an unsafe open.
 - **Automatically chmod every open.** Rejected: it mutates live external state,
   can surprise intentional group access, and makes a diagnostic an unannounced
   migration.
-- **Refuse every ordinary command until old modes are repaired.** Rejected for
-  this compatibility slice: it would strand the live decision queue at install
-  time. `doctor` supplies fail-loud feedback while secure creation prevents new
-  debt.
+- **Allow an existing database inside a writable directory.** Rejected after
+  fixed-point review reproduced replacement between identity inspection and
+  SQLite's pathname open. This would preserve compatibility by giving up ledger
+  integrity. Installation must instead be sequenced after deliberate repair;
+  this change does not perform that repair.
 - **Inspect only the main database.** Rejected: in WAL mode the database family
   includes sidecars whose permissions can disclose committed gate content.
 

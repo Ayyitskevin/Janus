@@ -884,7 +884,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "export":
             return args.fn(args)
         if args.cmd == "doctor":
-            blocker = core.storage_open_blocker(args.db)
+            try:
+                blocker = core.storage_open_blocker(args.db)
+            except JanusError as e:
+                blocker = str(e)
             if blocker:
                 return args.fn(args, None, open_blocker=blocker)
             try:

@@ -179,6 +179,9 @@ def _lstat(path: Path) -> os.stat_result | None:
         return path.lstat()
     except FileNotFoundError:
         return None
+    except OSError as exc:
+        detail = exc.strerror or type(exc).__name__
+        raise JanusError(f"cannot inspect storage path {path}: {detail}") from exc
 
 
 def _effective_uid() -> int:
@@ -191,7 +194,7 @@ def _effective_uid() -> int:
 
 
 def _directory_chain_finding(
-    leaf: Path, *, private_leaf: bool, prospective_child: bool = False
+    leaf: Path, *, private_leaf: bool, protect_child: bool = False
 ) -> str | None:
     """Explain why another OS user could replace an entry in ``leaf``'s path."""
     entries: list[tuple[Path, os.stat_result]] = []
@@ -230,8 +233,8 @@ def _directory_chain_finding(
     # as /tmp are the exception: another unprivileged user cannot replace a
     # child owned by this user (or root). This turns the pathname reopen between
     # os.open and SQLite into a same-user/root race, both inside the threat model.
-    if prospective_child and (leaf_mode & 0o022) and not (leaf_mode & stat.S_ISVTX):
-        return f"directory permits another OS user to replace a new child: {leaf}"
+    if protect_child and (leaf_mode & 0o022) and not (leaf_mode & stat.S_ISVTX):
+        return f"directory permits another OS user to replace a child entry: {leaf}"
     for (child, child_info), (parent, parent_info) in zip(entries, entries[1:]):
         parent_mode = stat.S_IMODE(parent_info.st_mode)
         if not (parent_mode & 0o022):
@@ -258,7 +261,7 @@ def _new_storage_parent_finding(parent: Path) -> str | None:
     finding = _directory_chain_finding(
         anchor,
         private_leaf=not missing,
-        prospective_child=bool(missing),
+        protect_child=bool(missing),
     )
     return finding
 
@@ -380,7 +383,11 @@ def storage_open_blocker(db_path: Path | None = None) -> str | None:
         )
     if info.st_nlink != 1:
         return f"database has {info.st_nlink} hard links (expected 1): {path}"
-    chain_finding = _directory_chain_finding(path.parent, private_leaf=False)
+    chain_finding = _directory_chain_finding(
+        path.parent,
+        private_leaf=False,
+        protect_child=True,
+    )
     if chain_finding:
         return chain_finding
     for suffix, label in (
@@ -429,6 +436,10 @@ def storage_privacy_findings(db_path: Path | None = None) -> list[str]:
         except FileNotFoundError:
             if required:
                 findings.append(f"{label} is missing: {target}")
+            return
+        except OSError as exc:
+            detail = exc.strerror or type(exc).__name__
+            findings.append(f"{label} cannot be inspected: {target} ({detail})")
             return
         if stat.S_ISLNK(info.st_mode):
             findings.append(f"{label} is a symbolic link: {target}")
