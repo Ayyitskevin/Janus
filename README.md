@@ -19,6 +19,7 @@ janus --seat <seat> raise "<one sentence a tired human can answer>" \
 
 janus board                # the one screen: what is waiting, how long, what worsens
 janus show <id>            # detail, and whether the binding still holds
+janus check <id>           # preview one stored command, confirm, then observe
 janus stats                # the dated scorecard: is anyone actually using this
 janus export [<id>]        # stable, digest-verified evidence (never authority)
 janus revise-check <id> --kind delivery --command "..." --reason "..."
@@ -36,7 +37,11 @@ future they have not seen — so `revise-check` exists for when it turns out to
 measure something adjacent to the question. It is a **new row**, never an edit:
 the original stays on the gate, `show` prints every revision with who made it and
 why, and the effective check is simply the newest one. That is the append-only
-rule kept rather than bargained with.
+rule kept rather than bargained with. Both `check` and `board --check` print the
+effective commands in full before they run and ask for confirmation. An
+unattended caller must add `--yes`; that flag skips the prompt, never the
+preview. If a revision lands after preview, Janus refuses to run either command
+until the caller reviews the new text.
 
 `export` is the machine-readable boundary. Unlike the diagnostic `list --json`
 shape, it is versioned, self-describing, complete, and protected by per-record

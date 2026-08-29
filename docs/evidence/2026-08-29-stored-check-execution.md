@@ -1,0 +1,78 @@
+# Stored-check execution safety — 2026-08-29
+
+## Decision under test
+
+Running one stored check must cross the same visible, explicit execution
+boundary as running the board's batch. Janus prints each effective command in
+full, flushes the preview, and then either receives interactive confirmation or
+requires `--yes` from an unattended caller. Consent applies only to the exact
+command displayed; a concurrent revision fails closed.
+
+This is a security boundary around intentional same-user shell execution. It is
+not shell sanitization, a sandbox, or authority to execute a gate written by a
+lower-trust or remote principal. Remote writes remain deliberately unavailable.
+
+## Live measurement
+
+A read-only query of `~/.janus/janus.db` on mickey at 2026-08-29 found:
+
+- 33 gates and 20 effective stored commands: 17 decay, 3 delivery;
+- 2 append-only check revisions and 8 recorded observations;
+- command lengths from 34 to 188 characters, median 126;
+- 14 of 20 commands longer than a 110-column terminal; and
+- no commands containing a newline.
+
+No command bodies were copied into this artifact. The distribution makes
+unclipped preview behavior load-bearing rather than cosmetic.
+
+A disposable pre-change CLI probe raised a gate whose decay check created a
+marker, then invoked `janus check <id>` with stdin disconnected. The command was
+not displayed, the marker was created, an observation was appended, and the
+process exited 0. That reproduces the defect without touching the live ledger.
+
+## Behavior cases
+
+The invariant suite covers these distinct cases:
+
+1. unattended single-check without `--yes` shows the full command and refuses;
+2. refusal creates neither a shell side effect nor an observation;
+3. `--yes` skips only the prompt and still prints the command;
+4. the newest append-only revision is both previewed and executed;
+5. the superseded original command is neither shown nor run;
+6. the preview occurs before the call into the execution function;
+7. an interactive decline records and executes nothing;
+8. decay and delivery kinds use the same boundary;
+9. a revision between preview and execution invalidates consent; and
+10. the board's existing unattended refusal and full-preview behavior remains
+    unchanged through the shared implementation.
+
+## Assumptions and non-goals
+
+- The repository threat model and the current same-OS-user deployment are the
+  authoritative trust boundary for this slice.
+- `--yes` means the caller has already chosen to run stored text; it does not
+  make that text safe and does not suppress its display.
+- This change adds no timer, remote write, privilege boundary, schema change,
+  or new dependency.
+- Terminal control-character hardening is separate. The live command set has
+  no newlines, and lower-trust writers remain out of scope by design.
+
+## Verification evidence
+
+- Before implementation, `python -m pytest -q tests/test_invariants.py -k
+  'single_check'` failed all four initial boundary tests: the unattended path
+  exited 0 and created its marker, `--yes` was unknown, and neither preview nor
+  decline existed.
+- With the exact-command comparison deliberately removed, `python -m pytest -q
+  tests/test_invariants.py -k 'command_changes_after_preview'` failed because
+  no error was raised and the unseen replacement executed. Restoring the guard
+  makes the test pass.
+- `./scripts/check.sh` compiles the package and passes all 73 invariant tests.
+- A clean Python 3.12 virtual environment installed the candidate as a regular
+  site-packages copy (not editable). Its unattended call exited 2, printed the
+  complete command and `--yes` recovery, and left zero observations and no
+  marker. The `--yes` call printed the same command, created the marker, and
+  recorded exactly one observation containing the displayed bytes.
+- `git diff --check` is clean. A repository scan found no credential-shaped
+  strings. No dependency was added, so there is no changed dependency surface
+  to audit.

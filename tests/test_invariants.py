@@ -18,6 +18,7 @@ import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -888,6 +889,126 @@ def _cli(db: Path, *argv):
              "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
              "HOME": str(db.parent), "USER": "tester"},
     )
+
+
+def test_single_check_refuses_an_unattended_stored_command_before_execution(tmp_path):
+    """The one-gate path has the same executable-text boundary as the board.
+
+    The full command is deliberately longer than the normal board width. If it
+    is clipped, hidden, or invoked before consent, this test fails on a real
+    side effect and on the append-only observation record.
+    """
+    db = tmp_path / "single.db"
+    conn = core.connect(db)
+    marker = tmp_path / ("SHOULD_NOT_EXIST_" + "x" * 120)
+    command = f"touch {marker}"
+    g = _gate(conn, decay_check=command)
+
+    r = _cli(db, "check", g)
+
+    assert r.returncode != 0, r.stdout
+    assert command in r.stdout + r.stderr, "the stored command was not shown in full"
+    assert "--yes" in r.stdout + r.stderr
+    assert not marker.exists(), "the command ran without explicit unattended consent"
+    assert core.latest_observation(conn, g, "decay") is None
+
+
+def test_single_check_yes_previews_then_records_the_effective_command(tmp_path):
+    db = tmp_path / "single.db"
+    conn = core.connect(db)
+    original = tmp_path / "ORIGINAL_MUST_NOT_RUN"
+    effective = tmp_path / "effective-ran"
+    g = _gate(conn, decay_check=f"touch {original}")
+    core.revise_check(
+        conn,
+        g,
+        "decay",
+        f"touch {effective}",
+        "tester",
+        "the original is a sentinel; this revision is the command under review",
+    )
+
+    r = _cli(db, "check", g, "--yes")
+
+    assert r.returncode == 0, r.stderr
+    assert f"touch {effective}" in r.stdout
+    assert f"touch {original}" not in r.stdout
+    assert effective.exists()
+    assert not original.exists()
+    observation = core.latest_observation(conn, g, "decay")
+    assert observation is not None and observation["command"] == f"touch {effective}"
+
+
+def test_single_check_prints_the_command_before_calling_observe(conn, capsys, monkeypatch):
+    from janus import cli
+
+    command = "true # visible before the execution boundary"
+    g = _gate(conn, decay_check=command)
+
+    def observe_after_preview(*_args, **_kwargs):
+        assert command in capsys.readouterr().out
+        return {"exit_code": 0, "output": ""}
+
+    monkeypatch.setattr(core, "observe", observe_after_preview)
+    args = SimpleNamespace(gate_id=g, kind="decay", seat="tester", yes=True)
+
+    assert cli.cmd_check(args, conn) == 0
+
+
+def test_single_check_interactive_decline_runs_and_records_nothing(
+    tmp_path, capsys, monkeypatch
+):
+    from janus import cli
+
+    db = tmp_path / "single.db"
+    conn = core.connect(db)
+    marker = tmp_path / "DECLINED_MUST_NOT_RUN"
+    command = f"touch {marker}"
+    g = _gate(conn, delivery_check=command)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "no")
+    args = SimpleNamespace(gate_id=g, kind="delivery", seat="tester", yes=False)
+
+    assert cli.cmd_check(args, conn) == 0
+
+    out = capsys.readouterr().out
+    assert command in out and "nothing run" in out
+    assert not marker.exists()
+    assert core.latest_observation(conn, g, "delivery") is None
+
+
+def test_single_check_refuses_if_the_command_changes_after_preview(tmp_path, monkeypatch):
+    """Consent binds the displayed bytes, not whatever is effective later."""
+    from janus import cli
+
+    db = tmp_path / "single.db"
+    conn = core.connect(db)
+    previewed = tmp_path / "PREVIEWED_MUST_NOT_RUN"
+    replacement = tmp_path / "REPLACEMENT_MUST_NOT_RUN"
+    g = _gate(conn, decay_check=f"touch {previewed}")
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    def revise_then_accept(_prompt):
+        other = core.connect(db)
+        core.revise_check(
+            other,
+            g,
+            "decay",
+            f"touch {replacement}",
+            "other-seat",
+            "the command changed while the operator was reading the preview",
+        )
+        other.close()
+        return "yes"
+
+    monkeypatch.setattr("builtins.input", revise_then_accept)
+    args = SimpleNamespace(gate_id=g, kind="decay", seat="tester", yes=False)
+
+    with pytest.raises(JanusError, match="changed after preview"):
+        cli.cmd_check(args, conn)
+
+    assert not previewed.exists() and not replacement.exists()
+    assert core.latest_observation(conn, g, "decay") is None
 
 
 def test_decide_refuses_to_rule_on_drifted_bytes_without_yes(tmp_path):
