@@ -75,6 +75,8 @@ Invariant tests additionally prove:
 - descriptor inspection failure retains an already-private entry for operator
   inspection, while a failed post-create identity check refuses to unlink an
   entry whose identity is uncertain;
+- cleanup inspection failure preserves the primary hardening refusal and the
+  uncertain owner-only entry rather than masking the refusal or unlinking;
 - a failed descriptor hardening removes the exact empty file Janus created;
 - a broad directory appearing during parent creation is refused;
 - if an existing database disappears after preflight, `mode=rw` refuses rather
@@ -87,6 +89,8 @@ Invariant tests additionally prove:
 - `doctor` exits `1` without creating a missing ledger, reports a storage
   finding exactly once, and does not mislabel migration-integrity failure as a
   permission problem;
+- deletion after `doctor` begins opening is refused by its existing-only
+  connector and does not recreate the database;
 - `doctor` exits `0` and prints the exact `0700`/`0600` contract for a private
   family.
 
@@ -118,7 +122,14 @@ The final descriptor fault injection found `close(2)` could override that
 structured refusal and skip failed-hardening cleanup. Descriptor invalidation
 is now centralized; cleanup runs even when close also reports an error.
 
-After implementation, the exact full repository gate passed **131 tests**. A
+A local Linux ACL probe set a default named-user `rwx` ACL on the creation
+parent. Newly created directories and database retained that entry with
+`effective:---` while modes remained `0700`/`0600`. Adding an effective named
+user grant changed the database mode to `0670`; `chmod 0600` restored a zero ACL
+mask and `effective:---`. This matches the `acl(5)` access-check algorithm: the
+group mode bits correspond to the ACL mask that caps named-user/group entries.
+
+After implementation, the exact full repository gate passed **134 tests**. A
 descriptor-hardening mutation then produced one failure under umask `777` while
 the `000` case still passed; restoring the exact candidate returned both cases
 to green. A non-editable wheel installed into a clean Python 3.12 environment;

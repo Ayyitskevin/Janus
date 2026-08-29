@@ -44,6 +44,10 @@ distinct.
 This boundary deliberately requires POSIX owner and mode semantics. On a
 platform without them Janus refuses with an operator-facing error rather than
 claiming an equivalent privacy guarantee it cannot prove.
+On Linux POSIX ACLs do not bypass an exact owner-only mode: the group permission
+bits correspond to the ACL mask, which caps every named-user and named-group
+entry. Thus `0700`/`0600` makes inherited or retained non-owner ACL entries
+ineffective; an effective grant necessarily changes the checked mode bits.
 
 `janus doctor` inspects the exact active family: containing directory, database,
 `-wal`, `-shm`, and `-journal` when present. It fails on a wrong owner, wrong
@@ -55,6 +59,9 @@ ordinary open or by `doctor`, and `doctor` does not create a missing ledger; the
 output says so and exits nonzero. A human can then choose the maintenance
 window, backup, and exact permission change. This keeps feedback in Janus
 without turning a diagnostic into a hidden migration.
+`doctor` uses an existing-only connector, so deletion between inspection and
+SQLite open remains absence rather than falling through the ordinary command
+path's private-creation behavior.
 Any wrong mode is a refusal, not only a diagnostic finding. A writable database
 can be mutated directly; a writable containing directory can replace the main
 database; and even a sticky writable directory leaves absent WAL, SHM, or
@@ -76,6 +83,8 @@ their explicit `mode=rw` or `mode=ro`.
   `777`, including its live WAL and shared-memory files.
 - Existing broad storage fails closed until the owner schedules deliberate
   repair. No ordinary command or export silently accepts a weaker boundary.
+- A diagnostic cannot create or recreate the ledger, including across an
+  inspection/open race.
 - Alternate locations no longer inherit unsafe creation defaults or
   replaceable parent paths silently.
 - Database-family symlinks, wrong types/owners, and hard-link aliases are
@@ -111,6 +120,9 @@ their explicit `mode=rw` or `mode=ro`.
 - Linux `path_resolution(7)` documents component lookup and directory
   permission semantics:
   https://man7.org/linux/man-pages/man7/path_resolution.7.html
+- Linux `acl(5)` documents the correspondence between group mode bits and the
+  ACL mask, plus the mask's cap on named-user and named-group permissions:
+  https://man7.org/linux/man-pages/man5/acl.5.html
 - SQLite documents that WAL and journal files are part of the database family:
   https://sqlite.org/howtocorrupt.html#_deleting_a_hot_journal
 - Measured cases and commands: `docs/evidence/2026-08-29-ledger-permissions.md`.

@@ -885,13 +885,7 @@ def main(argv: list[str] | None = None) -> int:
             return args.fn(args)
         if args.cmd == "doctor":
             try:
-                open_blocker = core.storage_open_blocker(args.db)
-            except core.StorageBoundaryError as e:
-                return args.fn(args, None, open_blocker=e.finding)
-            if open_blocker:
-                return args.fn(args, None, open_blocker=open_blocker)
-            try:
-                conn = core.connect(args.db)
+                conn = core.connect_existing(args.db)
             except core.StorageBoundaryError as e:
                 return args.fn(args, None, open_blocker=e.finding)
             return args.fn(args, conn)

@@ -337,7 +337,12 @@ def _create_private_parents(parent: Path) -> None:
 
 def _unlink_created_file(path: Path, created: os.stat_result) -> bool:
     """Remove only the directory entry that still names our exact new inode."""
-    current = _lstat(path)
+    try:
+        current = _lstat(path)
+    except StorageBoundaryError:
+        # Cleanup uncertainty must preserve both the entry and the primary
+        # hardening refusal. It can never justify unlinking an unverified name.
+        return False
     if current is None:
         return True
     if (
@@ -502,12 +507,11 @@ def storage_privacy_findings(db_path: Path | None = None) -> list[str]:
     findings: list[str] = []
     expected_uid = _effective_uid()
 
-    def inspect(
+    def inspect_file(
         label: str,
         target: Path,
         expected_mode: int,
         *,
-        directory: bool,
         required: bool,
     ) -> None:
         try:
@@ -523,10 +527,8 @@ def storage_privacy_findings(db_path: Path | None = None) -> list[str]:
         if stat.S_ISLNK(info.st_mode):
             findings.append(f"{label} is a symbolic link: {target}")
             return
-        expected_type = stat.S_ISDIR if directory else stat.S_ISREG
-        if not expected_type(info.st_mode):
-            kind = "directory" if directory else "regular file"
-            findings.append(f"{label} is not a {kind}: {target}")
+        if not stat.S_ISREG(info.st_mode):
+            findings.append(f"{label} is not a regular file: {target}")
             return
         if info.st_uid != expected_uid:
             findings.append(
@@ -538,38 +540,33 @@ def storage_privacy_findings(db_path: Path | None = None) -> list[str]:
             findings.append(
                 f"{label} mode {actual_mode:04o} (expected {expected_mode:04o}): {target}"
             )
-        if not directory and info.st_nlink != 1:
+        if info.st_nlink != 1:
             findings.append(f"{label} has {info.st_nlink} hard links (expected 1): {target}")
 
-    inspect("directory", path.parent, PRIVATE_DIRECTORY_MODE, directory=True, required=True)
-    inspect("database", path, PRIVATE_FILE_MODE, directory=False, required=True)
+    try:
+        directory_finding = _directory_chain_finding(path.parent, private_leaf=True)
+    except StorageBoundaryError as exc:
+        findings.append(exc.finding)
+    else:
+        if directory_finding:
+            findings.append(directory_finding)
+    inspect_file("database", path, PRIVATE_FILE_MODE, required=True)
     for suffix, label in (
         ("-wal", "WAL"),
         ("-shm", "shared memory"),
         ("-journal", "rollback journal"),
     ):
-        inspect(
+        inspect_file(
             label,
             Path(f"{path}{suffix}"),
             PRIVATE_FILE_MODE,
-            directory=False,
             required=False,
         )
     return findings
 
 
-def connect(db_path: Path | None = None) -> sqlite3.Connection:
-    """Open (creating if needed) and migrate forward. Never migrates backward."""
-    path = storage_path(db_path)
-    initially_missing = _lstat(path) is None
-    if initially_missing:
-        blocker = _new_storage_parent_finding(path.parent)
-        if blocker:
-            raise StorageBoundaryError(
-                f"refusing unsafe new ledger path: {blocker}", finding=blocker
-            )
-        _create_private_parents(path.parent)
-        _create_private_database(path)
+def _connect_existing_path(path: Path) -> sqlite3.Connection:
+    """Open and migrate one normalized existing path; never create its database."""
     blocker = storage_open_blocker(path)
     if blocker:
         raise StorageBoundaryError(
@@ -600,6 +597,26 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
         close_after_failed_setup()
         raise JanusError(f"cannot initialize ledger {path}: {exc}") from exc
     return conn
+
+
+def connect_existing(db_path: Path | None = None) -> sqlite3.Connection:
+    """Open an existing ledger only, preserving absence as a refusal."""
+    return _connect_existing_path(storage_path(db_path))
+
+
+def connect(db_path: Path | None = None) -> sqlite3.Connection:
+    """Open (creating if needed) and migrate forward. Never migrates backward."""
+    path = storage_path(db_path)
+    initially_missing = _lstat(path) is None
+    if initially_missing:
+        blocker = _new_storage_parent_finding(path.parent)
+        if blocker:
+            raise StorageBoundaryError(
+                f"refusing unsafe new ledger path: {blocker}", finding=blocker
+            )
+        _create_private_parents(path.parent)
+        _create_private_database(path)
+    return _connect_existing_path(path)
 
 
 def migrate(conn: sqlite3.Connection) -> list[str]:
