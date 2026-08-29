@@ -105,7 +105,7 @@ def test_storage_privacy_reports_missing_owner_type_and_rollback_journal(
 ):
     missing = tmp_path / "missing" / "janus.db"
     missing_findings = "\n".join(core.storage_privacy_findings(missing))
-    assert "directory is missing" in missing_findings
+    assert "directory does not exist" in missing_findings
     assert "database is missing" in missing_findings
 
     db = tmp_path / "private" / "janus.db"
@@ -221,6 +221,29 @@ def test_failed_permission_application_removes_the_exact_new_file(tmp_path, monk
     with pytest.raises(JanusError, match="cannot secure new ledger"):
         core.connect(db)
     assert not db.exists()
+
+
+def test_cleanup_inspection_failure_preserves_the_primary_hardening_refusal(
+    tmp_path, monkeypatch
+):
+    db = tmp_path / "uncertain-cleanup.db"
+
+    def refuse_fchmod(descriptor, mode):
+        raise PermissionError(errno.EACCES, "test fchmod refusal")
+
+    def refuse_lstat(path):
+        raise core.StorageBoundaryError("test cleanup inspection refusal")
+
+    monkeypatch.setattr(core.os, "fchmod", refuse_fchmod)
+    monkeypatch.setattr(core, "_lstat", refuse_lstat)
+    with pytest.raises(
+        core.StorageBoundaryError,
+        match="cannot secure new ledger.*could not be safely removed",
+    ):
+        core._create_private_database(db)
+
+    assert db.exists(), "uncertain cleanup must retain the owner-only entry"
+    assert _mode(db) == 0o600
 
 
 def test_descriptor_close_errors_are_structured_and_do_not_skip_cleanup(
@@ -435,6 +458,48 @@ def test_doctor_reports_a_missing_ledger_without_creating_it(tmp_path):
     assert "database is missing" in result.stdout
     assert "checks skipped" in result.stdout
     assert not db.exists()
+
+
+def test_doctor_cannot_recreate_a_ledger_deleted_during_open(
+    tmp_path, monkeypatch, capsys
+):
+    from janus import cli
+
+    db = tmp_path / "janus.db"
+    conn = core.connect(db)
+    conn.close()
+    real_blocker = core.storage_open_blocker
+    blocker_calls = 0
+
+    def approve_then_remove(path):
+        nonlocal blocker_calls
+        blocker_calls += 1
+        blocker = real_blocker(path)
+        assert blocker is None
+        db.unlink()
+        return None
+
+    monkeypatch.setattr(core, "storage_open_blocker", approve_then_remove)
+    assert cli.main(["--db", str(db), "doctor"]) == 1
+    output = capsys.readouterr()
+
+    assert blocker_calls == 1
+    assert "database is missing" in output.out
+    assert "checks skipped" in output.out
+    assert not db.exists(), "doctor must preserve absence even across its open race"
+
+
+def test_doctor_reports_a_directory_mode_finding_once(tmp_path):
+    directory = tmp_path / "private"
+    db = directory / "janus.db"
+    conn = core.connect(db)
+    conn.close()
+    directory.chmod(0o775)
+
+    result = _cli(db, "doctor")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert result.stdout.count("directory mode 0775 (expected 0700)") == 1
 
 
 def test_doctor_does_not_mislabel_migration_integrity_as_storage(tmp_path, capsys):
