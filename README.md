@@ -8,6 +8,14 @@ it waits, and what was eventually ruled — and it never decides anything itself
 
 > Janus records pending authority; it does not grant authority.
 
+> **Status: frozen 2026-08-29, and still live.** Beacon absorbs this capability,
+> so Janus stops growing — no new milestones, and M3 will not be built. It
+> remains the fleet's working ledger in the meantime and still takes correctness
+> fixes. The part worth carrying forward is the contract in
+> [`docs/adr/0001-the-gate-model.md`](docs/adr/0001-the-gate-model.md) and the
+> real twelve-gate corpus it was fitted to, not this implementation. See
+> [`docs/ROADMAP.md`](docs/ROADMAP.md).
+
 ## Quickstart
 
 ```bash

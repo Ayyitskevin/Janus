@@ -1,5 +1,39 @@
 # Roadmap
 
+> ## FROZEN 2026-08-29 — Janus stops here, and Beacon absorbs it
+>
+> Kevin's ruling, 2026-08-29: **Beacon is the product.** It takes the best parts
+> of these repos and becomes one open-source app for developers, for individuals,
+> and eventually for enterprises. Janus is one of those parts, so it stops
+> growing and is absorbed rather than extended.
+>
+> **Frozen means frozen, not dead.** Janus is still the live ledger: it holds
+> real gates today and the fleet reads `janus board` to find what is waiting on
+> a human. What changes is the direction of travel:
+>
+> - **Still in scope** — correctness fixes to what already exists, honest
+>   documentation, and keeping the ledger readable. A frozen tool that lies is
+>   worse than one that stopped.
+> - **Not in scope** — new milestones. **M3 will not be built** (see below).
+>   M2's unmet exit stays unmet and stays recorded as unmet.
+> - **The durable asset is the contract, not the code.** What Beacon should
+>   carry forward is `docs/adr/0001-the-gate-model.md` and the twelve-gate corpus
+>   at `docs/evidence/2026-08-24-gate-corpus.md` that it was fitted to — the
+>   four-value `kind` enum of *why a human is needed*, multi-option gates as the
+>   majority shape, the fifth terminal state `superseded`, resource gates that
+>   are requests rather than decisions, and above all the three invariants:
+>   a gate is open or closed and never both; a ruling binds a SHA-256 and not a
+>   name; **reading a ruling is not authority.** Two of those answers came out
+>   against their author's stated leanings because the corpus overruled taste.
+>   Re-deriving that model from scratch inside Beacon would cost the evidence.
+> - **The last invariant is the one to carry hardest.** Janus was built so that
+>   nothing in it could ever enter the permission path. Whatever absorbs it
+>   inherits that constraint, or it becomes the thing this repo exists to
+>   prevent.
+>
+> Milestones below are left exactly as they were written. They are the record of
+> what was built and what was promised, not a plan anyone is still working.
+
 Milestones are contract-first: each states what becomes true, and what stays
 deliberately unavailable. Nothing here authorizes a cross-module seam.
 
@@ -71,14 +105,27 @@ not as a failure to chase: a board that was built and is not used is the same
 class of finding as a pillar nobody adopts, and it is worth more written down
 than argued away. M2 stays open until the answer changes. Re-ask, do not assume.
 
-## M3 — read-only surfaces
+## M3 — read-only surfaces — **WILL NOT BE BUILT (frozen 2026-08-29)**
 
-- Loopback HTTP, GET-only, mirroring the CLI. No mutation over HTTP in this
-  milestone.
-- A stable export artifact — a versioned, digest-verified gate record other
-  systems can read without a live database.
+~~- Loopback HTTP, GET-only, mirroring the CLI.~~
+~~- A stable export artifact — a versioned, digest-verified gate record other~~
+~~  systems can read without a live database.~~
 
-**Exit:** one sibling reads the export without Janus knowing or caring.
+**Exit:** ~~one sibling reads the export without Janus knowing or caring.~~ —
+never met, and now unreachable by design.
+
+M3 existed to let a sibling read the ledger without a live database. Its one
+named consumer was Mosaic's migration reader, and Mosaic has itself been
+superseded by Beacon — which absorbs Janus outright and therefore reads the
+SQLite file directly as a migration source, not over a seam. Building the export
+now would be a seam to a consumer that no longer needs one, which is the exact
+mistake this roadmap already records under "Later, explicitly not next": *every
+sibling that built a seam before it had a measured consumer closed it again.*
+
+Note for whoever writes the Beacon-side reader: the gate ledger is append-only
+by trigger, so a reader may open it, but it must open a **quiesced copy** —
+verified as a copy, with no `-wal`/`-shm` companions, `immutable=1` — never the
+live file mid-transaction.
 
 ## M4 — measured adoption — **SHIPPED 2026-08-24**
 
