@@ -136,7 +136,9 @@ the approved effect landed. It does not mutate the ruling, prove causality, name
 the post-action bytes unless its stored command explicitly checks them, or grant
 authority. Janus therefore reports binding and delivery separately. Delivery
 checks cannot run before approval, and a historical pass must be run again to
-detect a later regression.
+detect a later regression. Revising a delivery check immediately makes results
+from its predecessor ineligible for current status while retaining them in
+append-only history.
 
 **`superseded` is a first-class outcome.** Measured across one real session,
 the most common way a gate ends is not a ruling and not expiry — it is the world

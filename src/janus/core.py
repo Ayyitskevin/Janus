@@ -416,6 +416,8 @@ def latest_delivery_observation(conn: sqlite3.Connection, gate_id: str) -> dict 
     Delivery is post-ruling evidence.  Older Janus versions allowed a delivery
     command to run while a gate was still open; letting that result survive a
     later approval would make the future appear to have been observed early.
+    A revision likewise replaces what is being measured, so a result from the
+    superseded command remains history but cannot answer the effective check.
 
     Timestamps have second resolution and wall clocks can move, so ordering is
     taken from the append-only audit trail written in the same transactions. If
@@ -428,6 +430,14 @@ def latest_delivery_observation(conn: sqlite3.Connection, gate_id: str) -> dict 
         return None
     observation = latest_observation(conn, gate_id, "delivery")
     if observation is None:
+        return None
+    gate = conn.execute(
+        "SELECT delivery_check FROM gates WHERE id = ?", (gate_id,)
+    ).fetchone()
+    current_command = effective_check(
+        conn, gate_id, "delivery", gate["delivery_check"] if gate else None
+    )
+    if current_command is None or observation["command"] != current_command:
         return None
 
     approved_audit = conn.execute(

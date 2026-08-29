@@ -274,7 +274,9 @@ that the stored command reported success or failure at one moment; it is not a
 postimage receipt, does not prove causality, and grants no authority. Binding
 and delivery are therefore rendered as separate dimensions. A historical pass
 must be run again to detect a later regression unless the command itself checks
-an exact expected result.
+an exact expected result. A check revision changes what is being measured, so
+observations of its predecessor remain in history but do not count toward the
+effective check's delivery status.
 
 Today's gate #2 would read: `approved`, with
 `delivery.check: test -f ~/.claude/athena.env`, and the board would show it as
