@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import core
+from . import export as stable_export
 from .core import JanusError
 
 KIND_HELP = (
@@ -155,6 +156,13 @@ def cmd_show(a, conn) -> int:
         for o in g["observations"]:
             verdict = "occurred/landed" if o["exit_code"] == 0 else "not yet"
             print(f"    {o['at']} {o['kind']}: exit={o['exit_code']} ({verdict})")
+    return 0
+
+
+def cmd_export(a, _conn=None) -> int:
+    """Emit the stable interchange artifact without opening a writable ledger."""
+    sys.stdout.buffer.write(stable_export.export_gates(a.db, a.gate_id))
+    sys.stdout.buffer.write(b"\n")
     return 0
 
 
@@ -756,6 +764,13 @@ def build_parser() -> argparse.ArgumentParser:
     sh.add_argument("--json", action="store_true")
     sh.set_defaults(fn=cmd_show)
 
+    ex = sub.add_parser(
+        "export",
+        help="stable digest-verified JSON (read-only; evidence, never authority)",
+    )
+    ex.add_argument("gate_id", nargs="?", help="one gate; omit for the complete ledger")
+    ex.set_defaults(fn=cmd_export)
+
     d = sub.add_parser("decide", help="rule on a gate (the human's verb)")
     d.add_argument("gate_id")
     g = d.add_mutually_exclusive_group(required=True)
@@ -811,6 +826,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.cmd == "export":
+            return args.fn(args)
         conn = core.connect(args.db)
         return args.fn(args, conn)
     except JanusError as e:

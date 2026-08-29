@@ -1,0 +1,380 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:janus:export:v1",
+  "title": "Janus stable gate export v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "document", "integrity"],
+  "properties": {
+    "schema": {"const": "janus.export.v1"},
+    "document": {"$ref": "#/$defs/document"},
+    "integrity": {"$ref": "#/$defs/documentIntegrity"}
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "gateId": {
+      "type": "string",
+      "minLength": 12,
+      "maxLength": 12,
+      "pattern": "^g[0-9a-f]{11}$"
+    },
+    "instant": {
+      "type": "string",
+      "minLength": 20,
+      "maxLength": 20,
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "integer64": {
+      "type": "integer",
+      "minimum": -9223372036854775808,
+      "maximum": 9223372036854775807
+    },
+    "nonnegativeInteger64": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "positiveInteger64": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9223372036854775807
+    },
+    "nonemptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "nullableString": {
+      "type": ["string", "null"]
+    },
+    "documentIntegrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "canonicalizer", "document_sha256"],
+      "properties": {
+        "algorithm": {"const": "sha256"},
+        "canonicalizer": {"const": "janus.canonical-json.v1"},
+        "document_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "recordIntegrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "canonicalizer", "record_sha256"],
+      "properties": {
+        "algorithm": {"const": "sha256"},
+        "canonicalizer": {"const": "janus.canonical-json.v1"},
+        "record_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "migration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "checksum"],
+      "properties": {
+        "version": {"$ref": "#/$defs/nonemptyString"},
+        "checksum": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module", "migrations"],
+      "properties": {
+        "module": {"const": "janus"},
+        "migrations": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/migration"}
+        }
+      }
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gate_id"],
+      "properties": {
+        "gate_id": {
+          "anyOf": [
+            {"$ref": "#/$defs/gateId"},
+            {"type": "null"}
+          ]
+        }
+      }
+    },
+    "semantics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rulings",
+        "binding_verification",
+        "stored_checks",
+        "missing_binding_evidence"
+      ],
+      "properties": {
+        "rulings": {"const": "evidence_not_authority"},
+        "binding_verification": {"const": "not_performed"},
+        "stored_checks": {"const": "not_executed"},
+        "missing_binding_evidence": {"const": "invalid_record"}
+      }
+    },
+    "vocabulary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gate_states", "gate_kinds", "binding_kinds"],
+      "properties": {
+        "gate_states": {
+          "type": "array",
+          "minItems": 6,
+          "maxItems": 6,
+          "prefixItems": [
+            {"const": {"word": "open", "terminal": false, "human_ruled": false}},
+            {"const": {"word": "approved", "terminal": true, "human_ruled": true}},
+            {"const": {"word": "refused", "terminal": true, "human_ruled": true}},
+            {"const": {"word": "expired", "terminal": true, "human_ruled": false}},
+            {"const": {"word": "withdrawn", "terminal": true, "human_ruled": false}},
+            {"const": {"word": "superseded", "terminal": true, "human_ruled": false}}
+          ],
+          "items": false
+        },
+        "gate_kinds": {
+          "const": ["irreversible", "authority", "taste", "resource"]
+        },
+        "binding_kinds": {
+          "const": ["file", "git", "text"]
+        }
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "locator", "raised_sha256"],
+      "properties": {
+        "kind": {"enum": ["file", "git", "text"]},
+        "locator": {"$ref": "#/$defs/nonemptyString"},
+        "raised_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "bindingEvidence": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "sha256"],
+          "properties": {
+            "status": {"const": "recorded"},
+            "sha256": {"$ref": "#/$defs/sha256"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "sha256"],
+          "properties": {
+            "status": {"const": "invalid_missing"},
+            "sha256": {"type": "null"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "sha256"],
+          "properties": {
+            "status": {"const": "not_applicable"},
+            "sha256": {"type": "null"}
+          }
+        }
+      ]
+    },
+    "terminalEvent": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state", "type", "at", "actor", "reason", "option_id", "binding_evidence"
+          ],
+          "properties": {
+            "state": {"enum": ["approved", "refused"]},
+            "type": {"const": "human_ruling"},
+            "at": {"$ref": "#/$defs/instant"},
+            "actor": {"$ref": "#/$defs/nonemptyString"},
+            "reason": {"$ref": "#/$defs/nonemptyString"},
+            "option_id": {"$ref": "#/$defs/nullableString"},
+            "binding_evidence": {"$ref": "#/$defs/bindingEvidence"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state", "type", "at", "actor", "reason", "option_id", "binding_evidence"
+          ],
+          "properties": {
+            "state": {"enum": ["expired", "withdrawn", "superseded"]},
+            "type": {"const": "non_ruling_closure"},
+            "at": {"$ref": "#/$defs/instant"},
+            "actor": {"$ref": "#/$defs/nonemptyString"},
+            "reason": {"$ref": "#/$defs/nonemptyString"},
+            "option_id": {"type": "null"},
+            "binding_evidence": {
+              "const": {"status": "not_applicable", "sha256": null}
+            }
+          }
+        }
+      ]
+    },
+    "option": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["option_id", "position", "label", "detail", "recommended"],
+      "properties": {
+        "option_id": {"$ref": "#/$defs/nonemptyString"},
+        "position": {"$ref": "#/$defs/nonnegativeInteger64"},
+        "label": {"$ref": "#/$defs/nonemptyString"},
+        "detail": {"$ref": "#/$defs/nullableString"},
+        "recommended": {"type": "boolean"}
+      }
+    },
+    "checkPair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["original", "effective"],
+      "properties": {
+        "original": {"$ref": "#/$defs/nullableString"},
+        "effective": {"$ref": "#/$defs/nullableString"}
+      }
+    },
+    "checkRevision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "command", "at", "revised_by", "reason"],
+      "properties": {
+        "id": {"$ref": "#/$defs/positiveInteger64"},
+        "kind": {"enum": ["decay", "delivery"]},
+        "command": {"$ref": "#/$defs/nonemptyString"},
+        "at": {"$ref": "#/$defs/instant"},
+        "revised_by": {"$ref": "#/$defs/nonemptyString"},
+        "reason": {"$ref": "#/$defs/nonemptyString"}
+      }
+    },
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decay", "delivery", "revisions"],
+      "properties": {
+        "decay": {"$ref": "#/$defs/checkPair"},
+        "delivery": {"$ref": "#/$defs/checkPair"},
+        "revisions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/checkRevision"}
+        }
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "at", "kind", "command", "exit_code", "note"],
+      "properties": {
+        "id": {"$ref": "#/$defs/positiveInteger64"},
+        "at": {"$ref": "#/$defs/instant"},
+        "kind": {"enum": ["decay", "delivery"]},
+        "command": {"$ref": "#/$defs/nonemptyString"},
+        "exit_code": {"$ref": "#/$defs/integer64"},
+        "note": {"$ref": "#/$defs/nullableString"}
+      }
+    },
+    "auditEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "at", "actor", "verb", "detail"],
+      "properties": {
+        "id": {"$ref": "#/$defs/positiveInteger64"},
+        "at": {"$ref": "#/$defs/instant"},
+        "actor": {"$ref": "#/$defs/nonemptyString"},
+        "verb": {"$ref": "#/$defs/nonemptyString"},
+        "detail": {"$ref": "#/$defs/nullableString"}
+      }
+    },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "id", "state", "question", "kind", "raised_at", "raised_by",
+        "decay", "consumer", "horizon", "cites", "binding", "terminal_event",
+        "options", "checks", "observations", "audit_events"
+      ],
+      "properties": {
+        "schema": {"const": "janus.gate.v1"},
+        "id": {"$ref": "#/$defs/gateId"},
+        "state": {
+          "enum": ["open", "approved", "refused", "expired", "withdrawn", "superseded"]
+        },
+        "question": {"$ref": "#/$defs/nonemptyString"},
+        "kind": {"enum": ["irreversible", "authority", "taste", "resource"]},
+        "raised_at": {"$ref": "#/$defs/instant"},
+        "raised_by": {"$ref": "#/$defs/nonemptyString"},
+        "decay": {"$ref": "#/$defs/nonemptyString"},
+        "consumer": {"$ref": "#/$defs/nonemptyString"},
+        "horizon": {"$ref": "#/$defs/nullableString"},
+        "cites": {
+          "anyOf": [
+            {"$ref": "#/$defs/gateId"},
+            {"type": "null"}
+          ]
+        },
+        "binding": {
+          "anyOf": [
+            {"$ref": "#/$defs/binding"},
+            {"type": "null"}
+          ]
+        },
+        "terminal_event": {"$ref": "#/$defs/terminalEvent"},
+        "options": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/option"}
+        },
+        "checks": {"$ref": "#/$defs/checks"},
+        "observations": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/observation"}
+        },
+        "audit_events": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/auditEvent"}
+        }
+      }
+    },
+    "recordEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["record", "integrity"],
+      "properties": {
+        "record": {"$ref": "#/$defs/gate"},
+        "integrity": {"$ref": "#/$defs/recordIntegrity"}
+      }
+    },
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "source", "selection", "semantics", "vocabulary", "records"],
+      "properties": {
+        "schema": {"const": "janus.gates.v1"},
+        "source": {"$ref": "#/$defs/source"},
+        "selection": {"$ref": "#/$defs/selection"},
+        "semantics": {"$ref": "#/$defs/semantics"},
+        "vocabulary": {"$ref": "#/$defs/vocabulary"},
+        "records": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/recordEnvelope"}
+        }
+      }
+    }
+  }
+}

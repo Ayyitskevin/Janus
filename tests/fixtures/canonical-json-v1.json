@@ -1,0 +1,32 @@
+{
+  "canonicalizer": "janus.canonical-json.v1",
+  "vectors": [
+    {
+      "value": {
+        "z": "λ / line\n",
+        "a": [null, true, 7, {"b": "two", "a": "one"}]
+      },
+      "canonical": "{\"a\":[null,true,7,{\"a\":\"one\",\"b\":\"two\"}],\"z\":\"λ / line\\n\"}",
+      "sha256": "6cdf154951a0d6784b9cb596196f97338babcaed0cae34cbae0114c78d02b2c2"
+    },
+    {
+      "value": {
+        "é": "literal",
+        "e": "ascii",
+        "control": "\b\t\u0001",
+        "slash": "/\\\""
+      },
+      "canonical": "{\"control\":\"\\b\\t\\u0001\",\"e\":\"ascii\",\"slash\":\"/\\\\\\\"\",\"é\":\"literal\"}",
+      "sha256": "6e361388e0e50d737af975b8a19bc0ea01d3fcc6e1ab6450fde711fc35a1d566"
+    },
+    {
+      "value": {
+        "min": -9223372036854775808,
+        "max": 9223372036854775807,
+        "zero": 0
+      },
+      "canonical": "{\"max\":9223372036854775807,\"min\":-9223372036854775808,\"zero\":0}",
+      "sha256": "f0312149245bc3a9766e8fe6e878016c359b5b8ea0bb65cf054f49ed68900f99"
+    }
+  ]
+}

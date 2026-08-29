@@ -1,0 +1,130 @@
+{
+  "schema": "janus.export.v1",
+  "document": {
+    "schema": "janus.gates.v1",
+    "source": {
+      "module": "janus",
+      "migrations": [
+        {
+          "version": "0001_example",
+          "checksum": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ]
+    },
+    "selection": {"gate_id": "g00000000001"},
+    "semantics": {
+      "rulings": "evidence_not_authority",
+      "binding_verification": "not_performed",
+      "stored_checks": "not_executed",
+      "missing_binding_evidence": "invalid_record"
+    },
+    "vocabulary": {
+      "gate_states": [
+        {"word": "open", "terminal": false, "human_ruled": false},
+        {"word": "approved", "terminal": true, "human_ruled": true},
+        {"word": "refused", "terminal": true, "human_ruled": true},
+        {"word": "expired", "terminal": true, "human_ruled": false},
+        {"word": "withdrawn", "terminal": true, "human_ruled": false},
+        {"word": "superseded", "terminal": true, "human_ruled": false}
+      ],
+      "gate_kinds": ["irreversible", "authority", "taste", "resource"],
+      "binding_kinds": ["file", "git", "text"]
+    },
+    "records": [
+      {
+        "record": {
+          "schema": "janus.gate.v1",
+          "id": "g00000000001",
+          "state": "approved",
+          "question": "Ship the example candidate?",
+          "kind": "authority",
+          "raised_at": "2026-08-29T12:00:00Z",
+          "raised_by": "operator+reviewer",
+          "decay": "the candidate diverges",
+          "consumer": "example: independently re-verify before acting",
+          "horizon": null,
+          "cites": null,
+          "binding": {
+            "kind": "file",
+            "locator": "/example/candidate",
+            "raised_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "terminal_event": {
+            "state": "approved",
+            "type": "human_ruling",
+            "at": "2026-08-29T12:05:00Z",
+            "actor": "operator",
+            "reason": "the exact bytes passed review",
+            "option_id": "ship",
+            "binding_evidence": {
+              "status": "recorded",
+              "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          },
+          "options": [
+            {
+              "option_id": "ship",
+              "position": 0,
+              "label": "Ship",
+              "detail": null,
+              "recommended": true
+            }
+          ],
+          "checks": {
+            "decay": {
+              "original": "test -f /example/candidate",
+              "effective": "test -s /example/candidate"
+            },
+            "delivery": {"original": null, "effective": null},
+            "revisions": [
+              {
+                "id": 1,
+                "kind": "decay",
+                "command": "test -s /example/candidate",
+                "at": "2026-08-29T12:02:00Z",
+                "revised_by": "operator+reviewer",
+                "reason": "the original measured existence, not non-empty content"
+              }
+            ]
+          },
+          "observations": [
+            {
+              "id": 1,
+              "at": "2026-08-29T12:03:00Z",
+              "kind": "decay",
+              "command": "test -s /example/candidate",
+              "exit_code": 1,
+              "note": "not yet"
+            }
+          ],
+          "audit_events": [
+            {
+              "id": 1,
+              "at": "2026-08-29T12:00:00Z",
+              "actor": "operator+reviewer",
+              "verb": "raise",
+              "detail": "Ship the example candidate?"
+            },
+            {
+              "id": 2,
+              "at": "2026-08-29T12:05:00Z",
+              "actor": "operator",
+              "verb": "approved",
+              "detail": "the exact bytes passed review"
+            }
+          ]
+        },
+        "integrity": {
+          "algorithm": "sha256",
+          "canonicalizer": "janus.canonical-json.v1",
+          "record_sha256": "0a5efefb37ddde4199e98fdf34273918e71f16ba8381dbc5b65452b68e10da64"
+        }
+      }
+    ]
+  },
+  "integrity": {
+    "algorithm": "sha256",
+    "canonicalizer": "janus.canonical-json.v1",
+    "document_sha256": "e5bd4cad7ee4938bd0e89df23163ec9e16da479ffe046461d6efdd394f091caf"
+  }
+}
