@@ -1033,6 +1033,106 @@ def test_the_board_never_renders_an_unchecked_claim_as_an_observation(tmp_path):
     assert "never been checked" in out
 
 
+def test_the_board_pairs_decay_status_with_observation_age(tmp_path, monkeypatch):
+    """Gate age is not evidence age; both must be visible on the same row pair."""
+    from datetime import datetime, timedelta, timezone
+
+    db = tmp_path / "b.db"
+    conn = core.connect(db)
+
+    def days_ago(days: int) -> str:
+        return (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+
+    monkeypatch.setattr(core, "now", lambda: days_ago(30))
+    gate = _gate(conn, question="old gate with newer decay evidence", decay_check="false")
+    monkeypatch.setattr(core, "now", lambda: days_ago(3))
+    core.observe(conn, gate, "decay", "tester")
+
+    lines = _board(db).splitlines()
+    row = next(i for i, line in enumerate(lines) if gate in line)
+    assert "not yet" in lines[row] and "30d" in lines[row], lines[row]
+    assert "observed" in lines[row + 1] and "3d" in lines[row + 1], lines[row + 1]
+    assert "worsens" in lines[row + 1], lines[row + 1]
+
+
+def test_the_board_pairs_delivery_status_with_observation_age(tmp_path, monkeypatch):
+    """Ruling age must not masquerade as the age of post-ruling evidence."""
+    from datetime import datetime, timedelta, timezone
+
+    db = tmp_path / "b.db"
+    conn = core.connect(db)
+
+    def days_ago(days: int) -> str:
+        return (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+
+    monkeypatch.setattr(core, "now", lambda: days_ago(30))
+    gate = _gate(
+        conn,
+        question="old approval with newer delivery evidence",
+        kind="resource",
+        delivery_check="false",
+    )
+    monkeypatch.setattr(core, "now", lambda: days_ago(15))
+    core.close_gate(conn, gate, state="approved", reason="proceed", actor="kevin")
+    monkeypatch.setattr(core, "now", lambda: days_ago(4))
+    core.observe(conn, gate, "delivery", "tester")
+
+    lines = _board(db).splitlines()
+    row = next(i for i, line in enumerate(lines) if gate in line)
+    assert "not landed" in lines[row] and "15d" in lines[row], lines[row]
+    assert "observed" in lines[row + 1] and "4d" in lines[row + 1], lines[row + 1]
+    assert "check" in lines[row + 1], lines[row + 1]
+
+
+def test_revising_decay_check_invalidates_predecessor_board_evidence(tmp_path):
+    """Old evidence remains history but cannot describe a replacement check."""
+    db = tmp_path / "b.db"
+    conn = core.connect(db)
+    gate = _gate(conn, question="replace the decay measurement", decay_check="false")
+    core.observe(conn, gate, "decay", "tester")
+    assert "not yet" in next(line for line in _board(db).splitlines() if gate in line)
+
+    core.revise_check(
+        conn,
+        gate,
+        "decay",
+        "true",
+        "tester",
+        "the predecessor measured a different condition",
+    )
+    revised_lines = _board(db).splitlines()
+    revised_row = next(i for i, line in enumerate(revised_lines) if gate in line)
+    assert "unchecked" in revised_lines[revised_row], revised_lines[revised_row]
+    assert "observed" not in revised_lines[revised_row + 1], revised_lines[revised_row + 1]
+
+    core.observe(conn, gate, "decay", "tester")
+    current_lines = _board(db).splitlines()
+    current_row = next(i for i, line in enumerate(current_lines) if gate in line)
+    assert "landed" in current_lines[current_row], current_lines[current_row]
+    assert "observed" in current_lines[current_row + 1], current_lines[current_row + 1]
+
+    core.revise_check(
+        conn,
+        gate,
+        "decay",
+        "true",
+        "tester",
+        "a new measurement epoch may reuse the same command bytes",
+    )
+    same_command_lines = _board(db).splitlines()
+    same_command_row = next(i for i, line in enumerate(same_command_lines) if gate in line)
+    assert "unchecked" in same_command_lines[same_command_row], same_command_lines[
+        same_command_row
+    ]
+    assert "observed" not in same_command_lines[same_command_row + 1], same_command_lines[
+        same_command_row + 1
+    ]
+
+
 def test_the_board_discloses_what_the_one_screen_fold_hid(tmp_path):
     """No silent caps. A board that quietly drops rows is the surface it replaces."""
     db = tmp_path / "b.db"
