@@ -35,7 +35,11 @@ new file is re-identified after descriptor hardening, and a failed hardening
 attempt removes only the exact inode Janus created. Connection setup snapshots
 absence once and always takes the exclusive-creation path from that snapshot;
 an entry that appears during setup is a refusal, never stale permission to open.
-Filesystem creation errors are translated into operator-facing refusals.
+After preflight, writable SQLite opens use `mode=rw`, so an existing database
+that disappears cannot be recreated through SQLite's default create behavior.
+Filesystem creation errors are translated into typed, operator-facing storage
+refusals; ledger-integrity failures such as a changed migration checksum remain
+distinct.
 
 This boundary deliberately requires POSIX owner and mode semantics. On a
 platform without them Janus refuses with an operator-facing error rather than
@@ -47,9 +51,10 @@ type, mode other than `0700`/`0600`, a symlink, or more than one hard link to a
 database-family file. Missing optional sidecars are not findings.
 
 Inspection never repairs. Existing directories and files are not chmodded by an
-ordinary open or by `doctor`; the output says so and exits nonzero. A human can
-then choose the maintenance window, backup, and exact permission change. This
-keeps feedback in Janus without turning a diagnostic into a hidden migration.
+ordinary open or by `doctor`, and `doctor` does not create a missing ledger; the
+output says so and exits nonzero. A human can then choose the maintenance
+window, backup, and exact permission change. This keeps feedback in Janus
+without turning a diagnostic into a hidden migration.
 Any wrong mode is a refusal, not only a diagnostic finding. A writable database
 can be mutated directly; a writable containing directory can replace the main
 database; and even a sticky writable directory leaves absent WAL, SHM, or
@@ -61,8 +66,9 @@ those findings and skips checks that would require an unsafe open.
 
 The boundary is shared by ordinary writable commands and the stable export's
 separate read-only connector. Export still does not create or migrate a ledger;
-it inspects the unresolved absolute pathname, refuses the same identity hazards,
-and only then opens SQLite with `mode=ro`.
+both connectors lexically normalize an absolute pathname without resolving
+symbolic links, refuse the same identity hazards, and only then open SQLite in
+their explicit `mode=rw` or `mode=ro`.
 
 ## Consequences
 
