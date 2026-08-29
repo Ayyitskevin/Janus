@@ -3,7 +3,7 @@
 Milestones are contract-first: each states what becomes true, and what stays
 deliberately unavailable. Nothing here authorizes a cross-module seam.
 
-## M0 — settle the contract (no code)
+## M0 — settle the contract (no code) — **EXIT MET 2026-08-24**
 
 - `README.md`, `docs/VISION.md`, ADR 0001 (the gate model), this file.
 - The three invariants and the non-goal list are agreed before a schema exists.
@@ -21,7 +21,13 @@ deliberately unavailable. Nothing here authorizes a cross-module seam.
   The catastrophic failure is a future version that decides on the operator's
   behalf.
 
-**Exit:** a non-author seat reviews the model and the non-goals.
+**Exit — MET.** Codex, a non-author seat, reviewed the model and non-goals at
+the pinned M0 revision. The review returned HOLD on the claim that the
+four-value `kind` enum was exhaustive: its evidence came from one operator's
+twelve-gate, partly self-referential corpus. Kevin kept the four values until a
+real gate fails to classify, and ADR 0001 records both the limitation and that
+falsifiable trigger. The durable review is
+`shared/handoffs/2026-08-24_janus-m0-pr1-review-codex.md`.
 
 ## M1 — the local core, with adoption shipped alongside — **SHIPPED 2026-08-24**
 
@@ -117,12 +123,21 @@ therefore describes a ledger already 8 gates old rather than one measured from
 its first.
 
 **Exit — MET.** First scorecard published 2026-08-24, and the numbers are bad in
-the way the milestone anticipated: **8 gates, all 8 raised by a single seat**, in
-a ledger 54 minutes wide. 1 of 8 carries a decay check, so the board reads
+the way the milestone anticipated: **8 gates, all 8 attributed to one declared
+seat identity**, in a ledger 54 minutes wide. 1 of 8 carries a decay check, so the board reads
 `unmeasured` for the other 7; 0 of 8 set a horizon, so the overdue marker has
 never fired. 6 of 8 carry options, which is the one M0 corpus claim the live
-data supports. A pillar nobody but its author uses is a finding, and it is now
-a printed one.
+data supports. A pillar with only one observed attribution label is a finding,
+and it is now a printed one.
+
+The second scorecard, captured 2026-08-29, shows that finding changed rather
+than calcified: 47 gates were recorded under three attribution labels — 21
+declaring Codex, 20 declaring Claude Code, and 6 without a declared seat. The
+labels do not prove which process or person raised a gate. The ledger still has
+meaningful adoption gaps: only 3 of 47 gates have measurable delivery and none
+has a horizon. Counts, denominators, command, and installed-copy context are
+preserved in `docs/evidence/2026-08-29-adoption-scorecard.md`; this dated
+measurement does not claim M2 board use or M3 export consumption.
 
 ## Later, explicitly not next
 

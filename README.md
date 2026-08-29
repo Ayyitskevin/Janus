@@ -183,11 +183,14 @@ the two you are running, and names the branch when it is a working tree.
 ## Status
 
 M0 (the contract) and M1 (the ledger, the CLI, and adoption) shipped 2026-08-24.
-M2's board has landed; its exit is deliberately **not** met yet, because that
-exit is "the operator uses the board instead of grepping handoffs, measured by
-asking rather than assumed", and nobody has been asked. M0's exit — a non-author
-seat reviewing the model — is also still outstanding and is tracked as a gate in
-Janus itself. See `docs/ROADMAP.md`.
+M0's non-author review exit is met; the review's accepted limitation and
+revisit trigger live in ADR 0001. M2's board has landed, but its usage exit is
+deliberately **not** met: when asked on 2026-08-24, the operator said *"not yet —
+haven't used it"*. M3's export contract is built, while independent sibling
+consumption remains open. A second M4 scorecard on 2026-08-29 measured 47 gates
+under Codex, Claude Code, and unseated attribution labels, without treating
+those labels as proof of identity, board use, or export use. See
+`docs/ROADMAP.md`.
 
 ## License
 
