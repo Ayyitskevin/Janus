@@ -38,11 +38,14 @@ measure something adjacent to the question. It is a **new row**, never an edit:
 the original stays on the gate, `show` prints every revision with who made it and
 why, and the effective check is simply the newest one. That is the append-only
 rule kept rather than bargained with. Both `check` and `board --check` print the
-effective commands in full before they run and ask for confirmation. An
-unattended caller must add `--yes`; that flag skips the prompt, never the
-preview. A replacement already visible when execution loads the gate invalidates
-the preview; a later revision cannot substitute its unseen bytes for the command
-Janus already displayed and held locally.
+effective commands in full, as terminal-safe escaped string representations,
+before they run and ask for confirmation. Quotes delimit the command;
+backslashes, control characters, and non-ASCII characters are escaped so stored
+text cannot repaint the preview. An unattended caller must add `--yes`; that
+flag skips the prompt, never the preview. A replacement already visible when
+execution loads the gate invalidates the preview; a later revision cannot
+substitute its unseen bytes for the command Janus already displayed and held
+locally.
 
 `export` is the machine-readable boundary. Unlike the diagnostic `list --json`
 shape, it is versioned, self-describing, complete, and protected by per-record

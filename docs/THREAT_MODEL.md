@@ -43,16 +43,19 @@ check against one gate. `janus board --check` runs every stored check at once.
 Each path initially shipped a version that ran stored text without first making
 the operator read it: the board was corrected first, while the single-check path
 remained an unguarded execution path. Both now share one boundary that prints
-every effective command in full, flushes the preview before execution, and asks
-for confirmation. A non-interactive caller must pass `--yes`; that skips the
-prompt, not the preview. Consent binds the exact displayed command. A revision
-visible when execution loads the gate invalidates that consent; one committed
-after the final load cannot replace the displayed command held locally and
-becomes effective on the next run. Janus therefore does not hold SQLite's global
-writer lock across an arbitrary shell timeout merely to freeze the revision
-table. A check that hangs is killed and recorded as exit `124` rather than
-escaping as an exception, because an unrecorded check is indistinguishable from
-one never run.
+every effective command in full as an unambiguous, terminal-safe escaped string,
+flushes the preview before execution, and asks for confirmation. This rendering
+escapes carriage returns, ANSI escapes, bidi marks, literal backslashes, and all
+non-ASCII text instead of letting stored bytes repaint the operator's terminal;
+it does not change the command that executes. A non-interactive caller must pass
+`--yes`; that skips the prompt, not the preview. Consent binds the exact
+displayed command. A revision visible when execution loads the gate invalidates
+that consent; one committed after the final load cannot replace the displayed
+command held locally and becomes effective on the next run. Janus therefore
+does not hold SQLite's global writer lock across an arbitrary shell timeout
+merely to freeze the revision table. A check that hangs is killed and recorded
+as exit `124` rather than escaping as an exception, because an unrecorded check
+is indistinguishable from one never run.
 
 *Where this becomes remote code execution.* Everything above holds only while a
 gate can be written solely by a process already running as this user — writing a
