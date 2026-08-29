@@ -854,18 +854,24 @@ def latest_delivery_observation(conn: sqlite3.Connection, gate_id: str) -> dict 
     A revision likewise replaces what is being measured, so a result from the
     superseded command remains history but cannot answer the effective check.
 
-    Timestamps have second resolution and wall clocks can move, so ordering is
-    taken from the append-only audit trail written in the same transactions. If
-    that ordering evidence is absent, the conservative result is unknown.
+    Timestamps have second resolution and wall clocks can move. The newest
+    observation is therefore selected by its append-only row id, and its place
+    across the approval boundary comes from the audit ids written in the same
+    transactions. If that ordering evidence is absent, the conservative result
+    is unknown.
     """
     ruling = conn.execute(
         "SELECT state, ruled_at FROM rulings WHERE gate_id = ?", (gate_id,)
     ).fetchone()
     if ruling is None or ruling["state"] != "approved":
         return None
-    observation = latest_observation(conn, gate_id, "delivery")
-    if observation is None:
+    row = conn.execute(
+        "SELECT * FROM observations WHERE gate_id = ? AND kind = 'delivery'"
+        " ORDER BY id DESC LIMIT 1", (gate_id,)
+    ).fetchone()
+    if row is None:
         return None
+    observation = dict(row)
     gate = conn.execute(
         "SELECT delivery_check FROM gates WHERE id = ?", (gate_id,)
     ).fetchone()
