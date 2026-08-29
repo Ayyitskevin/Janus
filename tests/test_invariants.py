@@ -702,6 +702,26 @@ def test_a_delivery_result_is_bound_to_the_effective_check(tmp_path):
     assert core.latest_delivery_observation(conn, g)["exit_code"] == 1
 
 
+def test_revising_back_to_the_same_command_does_not_resurrect_old_delivery(conn):
+    """Command text can recur; a revision event still starts a new epoch."""
+    g = _gate(conn, delivery_check="true")
+    core.close_gate(conn, g, state="approved", reason="yes", actor="kevin")
+    core.observe(conn, g, "delivery", "tester")
+    assert core.latest_delivery_observation(conn, g)["exit_code"] == 0
+
+    core.revise_check(conn, g, "delivery", "false", "tester",
+                      "temporarily check a different result")
+    core.revise_check(conn, g, "delivery", "true", "tester",
+                      "restore the original check after correction")
+
+    assert core.latest_observation(conn, g, "delivery")["exit_code"] == 0
+    assert core.latest_delivery_observation(conn, g) is None, \
+        "matching text from an older check epoch must remain historical"
+
+    core.observe(conn, g, "delivery", "tester")
+    assert core.latest_delivery_observation(conn, g)["exit_code"] == 0
+
+
 def test_an_approved_promise_that_has_not_landed_gets_its_own_heading(tmp_path):
     """ADR 0001: an approved resource gate is a promise, not a delivery.
 

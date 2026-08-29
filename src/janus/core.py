@@ -421,9 +421,9 @@ def latest_delivery_observation(conn: sqlite3.Connection, gate_id: str) -> dict 
 
     Timestamps have second resolution and wall clocks can move. The newest
     observation is therefore selected by its append-only row id, and its place
-    across the approval boundary comes from the audit ids written in the same
-    transactions. If that ordering evidence is absent, the conservative result
-    is unknown.
+    across the approval and latest-revision boundaries comes from the audit ids
+    written in the same transactions. If that ordering evidence is absent, the
+    conservative result is unknown.
     """
     ruling = conn.execute(
         "SELECT state, ruled_at FROM rulings WHERE gate_id = ?", (gate_id,)
@@ -454,8 +454,16 @@ def latest_delivery_observation(conn: sqlite3.Connection, gate_id: str) -> dict 
         "SELECT id FROM audit_events WHERE gate_id = ? AND verb = 'observe:delivery'"
         " ORDER BY id DESC LIMIT 1", (gate_id,)
     ).fetchone()
+    revised_audit = conn.execute(
+        "SELECT id FROM audit_events WHERE gate_id = ? AND verb = 'revise:delivery'"
+        " ORDER BY id DESC LIMIT 1", (gate_id,)
+    ).fetchone()
+    boundary_id = max(
+        approved_audit["id"] if approved_audit else 0,
+        revised_audit["id"] if revised_audit else 0,
+    )
     if (approved_audit is None or observed_audit is None
-            or observed_audit["id"] <= approved_audit["id"]):
+            or observed_audit["id"] <= boundary_id):
         return None
     return observation
 
