@@ -1190,6 +1190,26 @@ def test_a_legacy_pre_ruling_delivery_observation_never_counts(conn):
     assert core.latest_delivery_observation(conn, g)["exit_code"] == 0
 
 
+def test_delivery_status_uses_append_order_not_wall_clock(conn):
+    """A clock jump must not let an older pass mask a later failure."""
+    g = _gate(conn, delivery_check="false")
+    core.close_gate(conn, g, state="approved", reason="yes", actor="kevin")
+    conn.execute(
+        "INSERT INTO observations (gate_id, at, kind, command, exit_code, note)"
+        " VALUES (?,?,?,?,?,?)",
+        (g, "2099-01-01T00:00:00Z", "delivery", "false", 0, "future clock"),
+    )
+    core.audit(conn, "tester", "observe:delivery", g, "exit=0")
+    conn.commit()
+
+    core.observe(conn, g, "delivery", "tester")
+
+    assert core.latest_observation(conn, g, "delivery")["exit_code"] == 0, \
+        "the generic historical view still sorts its timestamps"
+    assert core.latest_delivery_observation(conn, g)["exit_code"] == 1, \
+        "derived delivery status must follow append order"
+
+
 def test_a_delivery_result_is_bound_to_the_effective_check(tmp_path):
     """Correcting a bad check must not inherit the old check's success.
 
