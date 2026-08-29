@@ -40,8 +40,9 @@ why, and the effective check is simply the newest one. That is the append-only
 rule kept rather than bargained with. Both `check` and `board --check` print the
 effective commands in full before they run and ask for confirmation. An
 unattended caller must add `--yes`; that flag skips the prompt, never the
-preview. If a revision lands after preview, Janus refuses to run either command
-until the caller reviews the new text.
+preview. A replacement already visible when execution loads the gate invalidates
+the preview; a later revision cannot substitute its unseen bytes for the command
+Janus already displayed and held locally.
 
 `export` is the machine-readable boundary. Unlike the diagnostic `list --json`
 shape, it is versioned, self-describing, complete, and protected by per-record
