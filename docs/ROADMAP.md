@@ -75,10 +75,16 @@ than argued away. M2 stays open until the answer changes. Re-ask, do not assume.
 
 - Loopback HTTP, GET-only, mirroring the CLI. No mutation over HTTP in this
   milestone.
-- A stable export artifact — a versioned, digest-verified gate record other
-  systems can read without a live database.
+- ~~A stable export artifact~~ — **BUILT, EXIT NOT MET.** `janus export`
+  publishes a versioned, digest-verified complete or exact-gate snapshot from a
+  read-only connection. It carries recorded inputs rather than running checks or
+  computing live verdicts, and it declares Janus's state semantics so a sibling
+  need not copy them. Contract: `docs/spec/export-v1.md`.
 
-**Exit:** one sibling reads the export without Janus knowing or caring.
+**Exit — NOT MET.** One sibling must read and independently verify the export
+without Janus knowing or caring. Beacon is the measured first consumer; its
+current legacy reader still consumes `list --json`, so implementation alone
+does not satisfy this exit.
 
 ## M4 — measured adoption — **SHIPPED 2026-08-24**
 

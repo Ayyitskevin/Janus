@@ -20,6 +20,7 @@ janus --seat <seat> raise "<one sentence a tired human can answer>" \
 janus board                # the one screen: what is waiting, how long, what worsens
 janus show <id>            # detail, and whether the binding still holds
 janus stats                # the dated scorecard: is anyone actually using this
+janus export [<id>]        # stable, digest-verified evidence (never authority)
 janus revise-check <id> --kind delivery --command "..." --reason "..."
 janus decide <id> --approve --reason "..." [--option <id>]
 ```
@@ -36,6 +37,14 @@ measure something adjacent to the question. It is a **new row**, never an edit:
 the original stays on the gate, `show` prints every revision with who made it and
 why, and the effective check is simply the newest one. That is the append-only
 rule kept rather than bargained with.
+
+`export` is the machine-readable boundary. Unlike the diagnostic `list --json`
+shape, it is versioned, self-describing, complete, and protected by per-record
+and whole-document SHA-256 digests. It opens the ledger read-only, performs no
+migration, runs no check, and does not inspect live bindings. The exact format
+and cross-language conformance vector are in [the export v1
+specification](docs/spec/export-v1.md). Verifying an export proves content
+identity only; it does not turn a ruling into permission to act.
 
 Under its own heading the board also carries **PROMISED, NOT DELIVERED**: gates a
 human already approved whose `--delivery-check` has not yet succeeded. A ruling
