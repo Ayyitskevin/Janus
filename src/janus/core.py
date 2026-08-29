@@ -309,6 +309,13 @@ def close_gate(
     bound = digest_of_live(gate) if (
         rebind and state in RULED_STATES and gate["binding_sha256"]
     ) else None
+    if state in RULED_STATES and gate["binding_sha256"] and bound is None:
+        raise JanusError(
+            f"cannot record {state}: gate {gate_id} is bound, but Janus cannot "
+            "read the artifact to record the bytes ruled on. The gate remains "
+            "open. Restore the artifact, or supersede and re-raise the gate with "
+            "a readable binding."
+        )
     try:
         conn.execute(
             "INSERT INTO rulings (gate_id, state, ruled_at, ruled_by, reason,"
