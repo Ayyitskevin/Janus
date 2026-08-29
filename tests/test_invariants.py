@@ -161,6 +161,20 @@ def test_new_ledger_refuses_replaceable_existing_directory(tmp_path):
     with pytest.raises(JanusError, match="permits another OS user to replace"):
         core.connect(private / "janus.db")
 
+    existing = tmp_path / "existing"
+    existing_db = existing / "janus.db"
+    conn = core.connect(existing_db)
+    conn.close()
+    existing.chmod(0o777)
+    with pytest.raises(JanusError, match="permits another OS user to replace"):
+        core.connect(existing_db)
+
+    # Sticky-directory ownership prevents another unprivileged user from
+    # renaming this user's existing database entry.
+    existing.chmod(0o1777)
+    reopened = core.connect(existing_db)
+    reopened.close()
+
 
 def test_new_ledger_refuses_symbolic_link_in_directory_chain(tmp_path):
     target = tmp_path / "target"
@@ -238,6 +252,23 @@ def test_doctor_reports_wrong_type_before_opening_sqlite(tmp_path):
     assert sidecar_result.returncode == 1
     assert "rollback journal is not a regular file" in sidecar_result.stdout
     assert "checks skipped" in sidecar_result.stdout
+
+
+def test_doctor_reports_inaccessible_storage_without_a_traceback(tmp_path):
+    directory = tmp_path / "private"
+    db = directory / "janus.db"
+    conn = core.connect(db)
+    conn.close()
+    directory.chmod(0o000)
+    try:
+        result = _cli(db, "doctor")
+    finally:
+        directory.chmod(0o700)
+
+    assert result.returncode == 1
+    assert "cannot be inspected" in result.stdout
+    assert "checks skipped" in result.stdout
+    assert "Traceback" not in result.stderr
 
 
 # ------------------------- invariant 1: open or closed, never both ----------

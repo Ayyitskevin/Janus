@@ -23,9 +23,10 @@ WAL, shared-memory, and rollback-journal sidecars—for owner, regular-file type
 exact mode, symlinks, and hard links. It does not repair an existing path:
 changing live filesystem state inside a diagnostic would hide an operational
 migration. Broad modes on an otherwise stable existing database remain an
-operator finding, while identity hazards are refused before open. A failed
-storage line is a deliberate operator action, not permission for Janus to chmod
-the world it found.
+operator finding only when its containing directory prevents name replacement.
+A writable non-sticky ledger directory and other identity hazards are refused
+before open. A failed storage line is a deliberate operator action, not
+permission for Janus to chmod the world it found.
 
 This is inherited, not chosen, and it is why Janus must never enter the
 permission path. A system that treats a Janus read as sufficient grounds to act
