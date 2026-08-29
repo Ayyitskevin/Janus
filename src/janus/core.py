@@ -13,6 +13,7 @@ import hashlib
 import os
 import re
 import sqlite3
+import stat
 import subprocess
 import uuid
 from dataclasses import dataclass
@@ -25,6 +26,8 @@ TERMINAL_STATES = ("approved", "refused", "expired", "withdrawn", "superseded")
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 DEFAULT_DB = Path(os.environ.get("JANUS_DB", Path.home() / ".janus" / "janus.db"))
 _SEAT_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")
+PRIVATE_DIRECTORY_MODE = 0o700
+PRIVATE_FILE_MODE = 0o600
 
 
 class JanusError(RuntimeError):
@@ -171,10 +174,103 @@ def _checksum(sql: str) -> str:
     return hashlib.sha256(sql.encode()).hexdigest()
 
 
+def _create_private_parents(parent: Path) -> None:
+    """Create every missing parent privately without changing existing paths.
+
+    ``Path.mkdir(parents=True, mode=...)`` deliberately ignores ``mode`` for
+    intermediate parents, so using it here would expose a nested ledger when
+    the caller has a permissive umask.
+    Source: https://docs.python.org/3.11/library/pathlib.html#pathlib.Path.mkdir
+    """
+    missing: list[Path] = []
+    cursor = parent
+    while not cursor.exists():
+        missing.append(cursor)
+        if cursor == cursor.parent:
+            break
+        cursor = cursor.parent
+    for directory in reversed(missing):
+        try:
+            directory.mkdir(mode=PRIVATE_DIRECTORY_MODE)
+        except FileExistsError:
+            if not directory.is_dir():
+                raise
+            continue
+        # mkdir combines mode with umask. Widen only the directory this process
+        # just created to the exact owner-only contract; existing paths are never
+        # repaired as a side effect of opening Janus.
+        directory.chmod(PRIVATE_DIRECTORY_MODE)
+
+
+def _create_private_database(path: Path) -> None:
+    """Reserve a new ledger as owner-only before SQLite can create it broadly."""
+    try:
+        descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, PRIVATE_FILE_MODE)
+    except FileExistsError:
+        return
+    try:
+        # os.open applies umask to its mode. fchmod operates on the descriptor
+        # that won O_EXCL, avoiding a close/reopen pathname race and making the
+        # new file exactly 0600 even under an over-restrictive ambient umask.
+        # Sources: https://docs.python.org/3.11/library/os.html#os.open
+        #          https://docs.python.org/3.11/library/os.html#os.fchmod
+        os.fchmod(descriptor, PRIVATE_FILE_MODE)
+    finally:
+        os.close(descriptor)
+
+
+def storage_privacy_findings(db_path: Path | None = None) -> list[str]:
+    """Return explicit ownership/type/mode findings for the active DB family.
+
+    Inspection is deliberately non-repairing. Existing storage may be live;
+    changing it inside ``doctor`` would turn a diagnostic into a migration.
+    """
+    path = Path(db_path or DEFAULT_DB).expanduser().absolute()
+    findings: list[str] = []
+    expected_uid = os.geteuid()
+
+    def inspect(label: str, target: Path, expected_mode: int, *, directory: bool) -> None:
+        try:
+            info = target.lstat()
+        except FileNotFoundError:
+            return
+        if stat.S_ISLNK(info.st_mode):
+            findings.append(f"{label} is a symbolic link: {target}")
+            return
+        expected_type = stat.S_ISDIR if directory else stat.S_ISREG
+        if not expected_type(info.st_mode):
+            kind = "directory" if directory else "regular file"
+            findings.append(f"{label} is not a {kind}: {target}")
+            return
+        if info.st_uid != expected_uid:
+            findings.append(
+                f"{label} owner uid {info.st_uid} does not match process uid "
+                f"{expected_uid}: {target}"
+            )
+        actual_mode = stat.S_IMODE(info.st_mode)
+        if actual_mode != expected_mode:
+            findings.append(
+                f"{label} mode {actual_mode:04o} (expected {expected_mode:04o}): {target}"
+            )
+        if not directory and info.st_nlink != 1:
+            findings.append(f"{label} has {info.st_nlink} hard links (expected 1): {target}")
+
+    inspect("directory", path.parent, PRIVATE_DIRECTORY_MODE, directory=True)
+    inspect("database", path, PRIVATE_FILE_MODE, directory=False)
+    for suffix, label in (
+        ("-wal", "WAL"),
+        ("-shm", "shared memory"),
+        ("-journal", "rollback journal"),
+    ):
+        inspect(label, Path(f"{path}{suffix}"), PRIVATE_FILE_MODE, directory=False)
+    return findings
+
+
 def connect(db_path: Path | None = None) -> sqlite3.Connection:
     """Open (creating if needed) and migrate forward. Never migrates backward."""
-    path = Path(db_path) if db_path else DEFAULT_DB
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path = Path(db_path or DEFAULT_DB).expanduser().absolute()
+    _create_private_parents(path.parent)
+    _create_private_database(path)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")

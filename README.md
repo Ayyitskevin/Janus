@@ -55,6 +55,13 @@ and cross-language conformance vector are in [the export v1
 specification](docs/spec/export-v1.md). Verifying an export proves content
 identity only; it does not turn a ruling into permission to act.
 
+The ledger is the local trust boundary, not just an implementation detail. A
+new ledger and every directory Janus creates for it are owner-only (`0600` and
+`0700` respectively), independent of the caller's umask. `janus doctor` audits
+the database, WAL, shared-memory, and rollback-journal family for ownership,
+type, mode, symlink, and hard-link drift. It reports existing exposure and exits
+nonzero, but never silently changes permissions on live storage.
+
 Under its own heading the board also carries **PROMISED, NOT DELIVERED**: gates a
 human already approved whose `--delivery-check` has not yet succeeded. A ruling
 closes a *decision*; it does not make a credential exist. Those gates have left

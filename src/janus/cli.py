@@ -736,6 +736,15 @@ def cmd_doctor(a, conn) -> int:
         print("            whatever is checked out here is what every seat on this "
               "host runs")
     print(f"db          {core.DEFAULT_DB if not a.db else a.db}")
+    storage_findings = core.storage_privacy_findings(a.db)
+    if storage_findings:
+        problems += 1
+        for finding in storage_findings:
+            print(f"storage     FAILED — {finding}")
+        print("storage     no permissions were changed; restrict or relocate the "
+              "ledger deliberately")
+    else:
+        print("storage     private (directory 0700; database family 0600; owner only)")
     versions = [r["version"] for r in conn.execute(
         "SELECT version FROM schema_migrations ORDER BY version")]
     print(f"migrations  {', '.join(versions) or 'none'}")

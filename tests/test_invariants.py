@@ -13,6 +13,8 @@ paid for elsewhere in the fleet.
 from __future__ import annotations
 
 import json
+import os
+import stat
 import shutil
 import sqlite3
 import subprocess
@@ -40,6 +42,86 @@ def _gate(conn, **kw):
     )
     args.update(kw)
     return core.raise_gate(conn, **args)
+
+
+def _mode(path: Path) -> int:
+    return stat.S_IMODE(path.lstat().st_mode)
+
+
+# --------------------------------------- ledger filesystem trust boundary --
+@pytest.mark.parametrize("mask", [0o000, 0o777])
+def test_new_ledger_family_is_private_independent_of_umask(tmp_path, mask):
+    """The OS-user boundary must not depend on the caller's ambient umask."""
+    db = tmp_path / "new" / "nested" / "janus.db"
+    previous = os.umask(mask)
+    try:
+        conn = core.connect(db)
+    finally:
+        os.umask(previous)
+
+    assert _mode(db.parent.parent) == 0o700
+    assert _mode(db.parent) == 0o700
+    assert _mode(db) == 0o600
+    family = [path for suffix in ("-wal", "-shm") if (path := Path(f"{db}{suffix}")).exists()]
+    assert family, "WAL mode was not exercised, so sidecar privacy was not tested"
+    assert {_mode(path) for path in family} == {0o600}
+    conn.close()
+
+
+def test_storage_privacy_reports_broad_modes_symlinks_and_hardlinks(tmp_path):
+    private = tmp_path / "private"
+    private.mkdir(mode=0o700)
+    db = private / "janus.db"
+    conn = core.connect(db)
+
+    db.chmod(0o644)
+    private.chmod(0o775)
+    for suffix in ("-wal", "-shm"):
+        Path(f"{db}{suffix}").chmod(0o644)
+    hardlink = private / "second-name.db"
+    os.link(db, hardlink)
+
+    findings = core.storage_privacy_findings(db)
+    joined = "\n".join(findings)
+    assert "directory mode 0775" in joined
+    assert "database mode 0644" in joined
+    assert "database has 2 hard links" in joined
+    assert "WAL mode 0644" in joined
+    assert "shared memory mode 0644" in joined
+
+    link = tmp_path / "ledger-link.db"
+    link.symlink_to(db)
+    assert any("database is a symbolic link" in item for item in core.storage_privacy_findings(link))
+    conn.close()
+
+
+def test_doctor_fails_loudly_without_repairing_existing_broad_modes(tmp_path):
+    directory = tmp_path / "existing"
+    directory.mkdir(mode=0o700)
+    db = directory / "janus.db"
+    conn = core.connect(db)
+    conn.close()
+    directory.chmod(0o775)
+    db.chmod(0o644)
+    before = (_mode(directory), _mode(db))
+
+    result = _cli(db, "doctor")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "storage     FAILED" in result.stdout
+    assert "no permissions were changed" in result.stdout
+    assert (_mode(directory), _mode(db)) == before
+
+
+def test_doctor_accepts_a_private_ledger_family(tmp_path):
+    db = tmp_path / "private" / "janus.db"
+    conn = core.connect(db)
+    conn.close()
+
+    result = _cli(db, "doctor")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "storage     private" in result.stdout
 
 
 # ------------------------- invariant 1: open or closed, never both ----------
