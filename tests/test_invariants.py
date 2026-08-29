@@ -97,6 +97,84 @@ def test_ruling_records_the_digest_observed_at_ruling_time(conn, tmp_path):
     assert gate["ruling"]["bound_sha256"] == core.digest_file(art)
 
 
+def test_show_checks_current_bytes_against_the_ruling_not_the_raise(tmp_path):
+    """The artifact may legitimately change while the gate is still open.
+
+    The ruling rebinds to what the human actually saw.  Once ruled, current
+    applicability must compare with those bytes rather than the older bytes
+    present when the question was raised.
+    """
+    db = tmp_path / "ruling-basis.db"
+    conn = core.connect(db)
+    art = tmp_path / "proposal.txt"
+    art.write_text("raised bytes")
+    g = _gate(conn, binding=core.resolve_binding("file", str(art)))
+    art.write_text("ruled bytes")
+    core.close_gate(conn, g, state="approved", reason="approve current bytes",
+                    actor="kevin")
+
+    shown = _cli(db, "show", g).stdout
+    assert "current ruling-time bytes match" in shown, shown
+    assert "BINDING CHANGED SINCE THE RULING" not in shown, shown
+
+
+def test_show_keeps_a_drifted_ruling_as_historical_evidence(tmp_path):
+    db = tmp_path / "delivered.db"
+    conn = core.connect(db)
+    art = tmp_path / "consumer.txt"
+    art.write_text("before")
+    g = _gate(
+        conn,
+        kind="authority",
+        binding=core.resolve_binding("file", str(art)),
+        delivery_check=f"test \"$(cat {art})\" = after",
+    )
+    core.close_gate(conn, g, state="approved", reason="make the edit", actor="kevin")
+    art.write_text("after")
+    core.observe(conn, g, "delivery", "tester")
+
+    shown = _cli(db, "show", g).stdout
+    assert "BINDING CHANGED SINCE THE RULING" in shown, shown
+    assert "delivery check later reported success" in shown, shown
+    assert "does not identify today's bytes" in shown, shown
+    assert "ruling remains evidence about its recorded bytes" in shown, shown
+    assert "ruling on this gate as void" not in shown, shown
+    assert "raise a new gate" not in shown, shown
+
+
+def test_show_keeps_unexplained_post_ruling_drift_loud(tmp_path):
+    db = tmp_path / "unexplained.db"
+    conn = core.connect(db)
+    art = tmp_path / "consumer.txt"
+    art.write_text("before")
+    g = _gate(conn, kind="authority",
+              binding=core.resolve_binding("file", str(art)))
+    core.close_gate(conn, g, state="approved", reason="make the edit", actor="kevin")
+    art.write_text("mystery")
+
+    shown = _cli(db, "show", g).stdout
+    assert "BINDING CHANGED SINCE THE RULING" in shown, shown
+    assert "cannot tell approved delivery from unrelated drift" in shown, shown
+    assert "ruling remains evidence about its recorded bytes" in shown, shown
+
+
+def test_show_keeps_delivery_evidence_separate_when_ruled_bytes_still_live(tmp_path):
+    db = tmp_path / "separate-evidence.db"
+    conn = core.connect(db)
+    art = tmp_path / "unchanged.txt"
+    art.write_text("same bytes")
+    g = _gate(conn, binding=core.resolve_binding("file", str(art)),
+              delivery_check="true")
+    core.close_gate(conn, g, state="approved", reason="yes", actor="kevin")
+    core.observe(conn, g, "delivery", "tester")
+
+    shown = _cli(db, "show", g).stdout
+    assert "current ruling-time bytes match" in shown, shown
+    assert "check reported success" in shown, shown
+    assert "does not identify live artifact bytes, prove causality, or grant authority" in shown
+    assert "occurred/landed" not in shown, shown
+
+
 @pytest.mark.parametrize("state", core.RULED_STATES)
 def test_a_bound_gate_cannot_be_ruled_on_when_its_bytes_cannot_be_read(
         conn, tmp_path, state):
@@ -544,6 +622,38 @@ def test_doctor_still_reports_drift_on_a_gate_a_human_ruled_on(tmp_path):
 
 
 # -------------------------------------------------- board: promised/delivered ---
+def test_a_delivery_observation_requires_an_approved_ruling(conn, tmp_path):
+    marker = tmp_path / "MUST_NOT_RUN"
+    g = _gate(conn, delivery_check=f"touch {marker}")
+
+    with pytest.raises(JanusError, match="only after an approved ruling"):
+        core.observe(conn, g, "delivery", "tester")
+
+    assert not marker.exists(), "the delivery command ran before approval"
+    assert core.latest_observation(conn, g, "delivery") is None
+
+
+def test_a_legacy_pre_ruling_delivery_observation_never_counts(conn):
+    """Second-resolution timestamps cannot decide ordering on their own.
+
+    Reproduce the old API's legal sequence in one second, including its audit
+    event, then prove only the observation appended after approval is eligible.
+    """
+    g = _gate(conn, delivery_check="true")
+    stamp = core.now()
+    conn.execute(
+        "INSERT INTO observations (gate_id, at, kind, command, exit_code, note)"
+        " VALUES (?,?,?,?,?,?)", (g, stamp, "delivery", "true", 0, "legacy"))
+    core.audit(conn, "legacy", "observe:delivery", g, "exit=0")
+    conn.commit()
+    core.close_gate(conn, g, state="approved", reason="yes", actor="kevin")
+
+    assert core.latest_delivery_observation(conn, g) is None
+
+    core.observe(conn, g, "delivery", "tester")
+    assert core.latest_delivery_observation(conn, g)["exit_code"] == 0
+
+
 def test_an_approved_promise_that_has_not_landed_gets_its_own_heading(tmp_path):
     """ADR 0001: an approved resource gate is a promise, not a delivery.
 
@@ -591,7 +701,7 @@ def test_a_refused_gate_is_never_a_promise(tmp_path):
     assert g not in out and "PROMISED" not in out, out
 
 
-def test_an_approved_resource_gate_with_no_check_is_counted_not_listed(tmp_path):
+def test_any_approved_gate_with_no_delivery_check_is_counted_not_listed(tmp_path):
     """A row nothing can ever clear would train the reader to skip the section.
 
     It cannot be shown to have landed and it cannot be shown not to have, so it
@@ -600,11 +710,11 @@ def test_an_approved_resource_gate_with_no_check_is_counted_not_listed(tmp_path)
     """
     db = tmp_path / "b.db"
     conn = core.connect(db)
-    g = _gate(conn, kind="resource")            # no delivery_check
+    g = _gate(conn, kind="authority")           # no delivery_check
     core.close_gate(conn, g, state="approved", reason="yes", actor="kevin")
 
     out = _board(db)
-    assert "1 approved resource gate(s) carry no delivery check" in out
+    assert "1 approved gate(s) carry no delivery check" in out
     assert g not in out, "it must be counted, not listed as a clearable row"
 
 
@@ -784,13 +894,18 @@ def test_the_scorecard_refuses_to_extrapolate_a_rate_it_cannot_measure(tmp_path)
 def test_a_gate_with_no_delivery_check_is_unknown_never_acted(tmp_path):
     db = tmp_path / "s.db"
     conn = core.connect(db)
-    _gate(conn, kind="resource")                       # no signal at all
+    unknown = _gate(conn, kind="authority")             # approved, no signal
+    core.close_gate(conn, unknown, state="approved", reason="yes", actor="kevin")
     landed = _gate(conn, kind="resource", delivery_check="true")
     core.close_gate(conn, landed, state="approved", reason="yes", actor="kevin")
     core.observe(conn, landed, "delivery", "tester")
 
+    stale = _gate(conn, kind="resource", delivery_check="true")
+    core.close_gate(conn, stale, state="superseded", reason="world moved",
+                    actor="tester")
+
     d = json.loads(_stats(db, "--json"))["consumer_acted"]
-    assert d == {"measurable": 1, "confirmed": 1, "unknown": 1}, d
+    assert d == {"eligible": 2, "measurable": 1, "confirmed": 1, "unknown": 1}, d
 
 
 def test_the_scorecard_on_an_empty_ledger_invents_nothing(tmp_path):
@@ -861,13 +976,11 @@ def test_raising_without_a_decay_check_says_so_while_it_can_still_be_fixed(tmp_p
                                           "--decay-check", "true")
 
 
-def test_a_resource_gate_without_a_delivery_check_is_told_it_cannot_be_tracked(tmp_path):
-    out = _raise(tmp_path, "--kind", "resource")
-    assert "no delivery check" in out and "promise, not a delivery" in out
+def test_every_gate_without_a_delivery_check_is_told_it_cannot_be_tracked(tmp_path):
+    out = _raise(tmp_path, "--kind", "authority")
+    assert "no delivery check" in out and "consumer outcome will remain unmeasured" in out
     assert "no delivery check" not in _raise(tmp_path, "--kind", "resource",
                                              "--delivery-check", "true")
-    # Only resource gates promise a thing; the others must not be nagged.
-    assert "no delivery check" not in _raise(tmp_path, "--kind", "taste")
 
 
 # ------------------------------------- stored checks are executable text ------
@@ -1100,6 +1213,7 @@ def test_single_check_interactive_decline_runs_and_records_nothing(
     marker = tmp_path / "DECLINED_MUST_NOT_RUN"
     command = f"touch {marker}"
     g = _gate(conn, delivery_check=command)
+    core.close_gate(conn, g, state="approved", reason="yes", actor="kevin")
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _prompt: "no")
     args = SimpleNamespace(gate_id=g, kind="delivery", seat="tester", yes=False)
@@ -1312,7 +1426,7 @@ def test_a_gate_that_gains_a_delivery_check_stops_being_counted_as_unwatchable(t
     core.close_gate(conn, g, state="approved", reason="yes", actor="kevin")
 
     before = _board(db)
-    assert "1 approved resource gate(s) carry no delivery check" in before
+    assert "1 approved gate(s) carry no delivery check" in before
     assert g not in before
 
     core.revise_check(conn, g, "delivery", "false", "tester",
