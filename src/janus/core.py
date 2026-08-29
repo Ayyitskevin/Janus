@@ -845,6 +845,61 @@ def latest_observation(conn: sqlite3.Connection, gate_id: str, kind: str) -> dic
     return dict(row) if row else None
 
 
+def _latest_effective_observation(
+    conn: sqlite3.Connection,
+    gate_id: str,
+    kind: str,
+    *,
+    required_boundary_verb: str | None = None,
+) -> dict | None:
+    """Return evidence appended after every boundary for the effective check."""
+    if kind not in ("decay", "delivery"):
+        raise JanusError("observation kind must be 'decay' or 'delivery'")
+
+    row = conn.execute(
+        "SELECT * FROM observations WHERE gate_id = ? AND kind = ?"
+        " ORDER BY id DESC LIMIT 1",
+        (gate_id, kind),
+    ).fetchone()
+    if row is None:
+        return None
+    observation = dict(row)
+    gate = conn.execute(
+        "SELECT decay_check, delivery_check FROM gates WHERE id = ?", (gate_id,)
+    ).fetchone()
+    base_command = gate[f"{kind}_check"] if gate else None
+    current_command = effective_check(
+        conn, gate_id, kind, base_command
+    )
+    if current_command is None or observation["command"] != current_command:
+        return None
+
+    relevant_verbs = [f"observe:{kind}", f"revise:{kind}"]
+    if required_boundary_verb:
+        relevant_verbs.append(required_boundary_verb)
+    latest_audit_ids = {
+        audit["verb"]: audit["id"]
+        for audit in conn.execute(
+            f"SELECT verb, MAX(id) AS id FROM audit_events WHERE gate_id = ?"
+            f" AND verb IN ({','.join('?' for _ in relevant_verbs)}) GROUP BY verb",
+            (gate_id, *relevant_verbs),
+        )
+    }
+    observed_id = latest_audit_ids.get(f"observe:{kind}")
+    if observed_id is None:
+        return None
+
+    boundary_ids = [latest_audit_ids.get(f"revise:{kind}", 0)]
+    if required_boundary_verb:
+        required_boundary_id = latest_audit_ids.get(required_boundary_verb)
+        if required_boundary_id is None:
+            return None
+        boundary_ids.append(required_boundary_id)
+    if observed_id <= max(boundary_ids):
+        return None
+    return observation
+
+
 def latest_decay_observation(conn: sqlite3.Connection, gate_id: str) -> dict | None:
     """Return the latest decay result eligible for the effective check.
 
@@ -853,38 +908,7 @@ def latest_decay_observation(conn: sqlite3.Connection, gate_id: str) -> dict | N
     when wall clocks move or both commands happen to contain identical text.
     Audit ids provide the transaction order that timestamps cannot.
     """
-    row = conn.execute(
-        "SELECT * FROM observations WHERE gate_id = ? AND kind = 'decay'"
-        " ORDER BY id DESC LIMIT 1",
-        (gate_id,),
-    ).fetchone()
-    if row is None:
-        return None
-    observation = dict(row)
-    gate = conn.execute(
-        "SELECT decay_check FROM gates WHERE id = ?", (gate_id,)
-    ).fetchone()
-    current_command = effective_check(
-        conn, gate_id, "decay", gate["decay_check"] if gate else None
-    )
-    if current_command is None or observation["command"] != current_command:
-        return None
-
-    observed_audit = conn.execute(
-        "SELECT id FROM audit_events WHERE gate_id = ? AND verb = 'observe:decay'"
-        " ORDER BY id DESC LIMIT 1",
-        (gate_id,),
-    ).fetchone()
-    revised_audit = conn.execute(
-        "SELECT id FROM audit_events WHERE gate_id = ? AND verb = 'revise:decay'"
-        " ORDER BY id DESC LIMIT 1",
-        (gate_id,),
-    ).fetchone()
-    if observed_audit is None or (
-        revised_audit is not None and observed_audit["id"] <= revised_audit["id"]
-    ):
-        return None
-    return observation
+    return _latest_effective_observation(conn, gate_id, "decay")
 
 
 def latest_delivery_observation(conn: sqlite3.Connection, gate_id: str) -> dict | None:
@@ -907,42 +931,12 @@ def latest_delivery_observation(conn: sqlite3.Connection, gate_id: str) -> dict 
     ).fetchone()
     if ruling is None or ruling["state"] != "approved":
         return None
-    row = conn.execute(
-        "SELECT * FROM observations WHERE gate_id = ? AND kind = 'delivery'"
-        " ORDER BY id DESC LIMIT 1", (gate_id,)
-    ).fetchone()
-    if row is None:
-        return None
-    observation = dict(row)
-    gate = conn.execute(
-        "SELECT delivery_check FROM gates WHERE id = ?", (gate_id,)
-    ).fetchone()
-    current_command = effective_check(
-        conn, gate_id, "delivery", gate["delivery_check"] if gate else None
+    return _latest_effective_observation(
+        conn,
+        gate_id,
+        "delivery",
+        required_boundary_verb="approved",
     )
-    if current_command is None or observation["command"] != current_command:
-        return None
-
-    approved_audit = conn.execute(
-        "SELECT id FROM audit_events WHERE gate_id = ? AND verb = 'approved'"
-        " ORDER BY id DESC LIMIT 1", (gate_id,)
-    ).fetchone()
-    observed_audit = conn.execute(
-        "SELECT id FROM audit_events WHERE gate_id = ? AND verb = 'observe:delivery'"
-        " ORDER BY id DESC LIMIT 1", (gate_id,)
-    ).fetchone()
-    revised_audit = conn.execute(
-        "SELECT id FROM audit_events WHERE gate_id = ? AND verb = 'revise:delivery'"
-        " ORDER BY id DESC LIMIT 1", (gate_id,)
-    ).fetchone()
-    boundary_id = max(
-        approved_audit["id"] if approved_audit else 0,
-        revised_audit["id"] if revised_audit else 0,
-    )
-    if (approved_audit is None or observed_audit is None
-            or observed_audit["id"] <= boundary_id):
-        return None
-    return observation
 
 
 def list_gates(conn: sqlite3.Connection, *, state: str = "open") -> list[dict]:

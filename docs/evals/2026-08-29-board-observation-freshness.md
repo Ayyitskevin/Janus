@@ -81,3 +81,9 @@ through the CLI and fail if gate/ruling age is substituted for observation age.
 A third end-to-end regression proves that revising a decay check returns the
 board to `unchecked` and removes the predecessor's age until the replacement
 check runs.
+
+The default board is also height-bound after the additional evidence lines: a
+12-line mixed queue shows at least one waiting decision, one undelivered
+promise, both fold counts, and the count of approved promises with no delivery
+check without exceeding 12 lines or 80 columns. `janus board --all` remains the
+intentional unbounded escape hatch.

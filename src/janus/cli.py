@@ -13,7 +13,6 @@ import shutil
 import statistics
 import subprocess
 import sys
-import textwrap
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -434,6 +433,15 @@ def _clip(text: str, width: int) -> str:
     return text if len(text) <= width else text[: width - 1] + "…"
 
 
+def _visible_board_rows(total: int, budget: int) -> int:
+    """Fit two-line rows plus an honest one-line fold notice in a line budget."""
+    for visible in range(total, 0, -1):
+        cost = visible * 2 + (visible < total)
+        if cost <= budget:
+            return visible
+    return 0
+
+
 def cmd_board(a, conn) -> int:
     seat = core.seat_actor(a.seat)
 
@@ -530,59 +538,100 @@ def cmd_board(a, conn) -> int:
             summary += f" · {unmeasured} whose decay has never been checked"
     else:
         summary = "No decision is waiting on a human."
-    print(summary + "\n")
-
     # One screen or it is wrong (ROADMAP M2). When it does not fit, say so —
     # a board that silently drops rows is exactly the surface it replaces. The
-    # two sections share the budget; promises take at most half so a long
-    # decision queue can never hide them entirely, or the reverse.
-    lines = max(term.lines, 12) - 8
-    promised_lines = min(len(promised) * 2 + 2, max(lines // 2, 4)) if promised else 0
-    shown = len(rows) if a.all else max((lines - promised_lines) // 2, 1)
+    # two sections share the budget so neither can hide the other. `--all` is
+    # deliberately unbounded: it is the escape hatch from the one-screen view.
+    height = max(term.lines, 12)
+    compact_footer = [
+        "Reading is not authority to act. --all shows hidden rows; --check observes."
+    ]
+    full_footer = [
+        "",
+        "Sorted by observed decay, horizon (!), then longest wait.",
+        "'observed <age>' is evidence age; Janus invents no freshness threshold.",
+        "'unmeasured' means no re-runnable check; --check runs checks that exist.",
+        "Approval is not delivery; show <id> gives full context.",
+        "Reading this board is not authority to act.",
+    ]
+    footer = full_footer if a.all or height >= 18 else compact_footer
+    fixed_lines = 2 + len(footer) + bool(promised) + bool(unwatched)
+    row_budget = max(height - fixed_lines, 0)
+
+    if a.all:
+        shown, shown_p = len(rows), len(promised)
+    elif rows and promised:
+        candidates = [
+            (visible, visible_p)
+            for visible in range(1, len(rows) + 1)
+            for visible_p in range(1, len(promised) + 1)
+            if (
+                visible * 2 + (visible < len(rows))
+                + visible_p * 2 + (visible_p < len(promised))
+            ) <= row_budget
+        ]
+        shown, shown_p = max(
+            candidates,
+            key=lambda pair: (sum(pair), min(pair), -abs(pair[0] - pair[1])),
+            default=(0, 0),
+        )
+    elif rows:
+        shown, shown_p = _visible_board_rows(len(rows), row_budget), 0
+    else:
+        shown, shown_p = 0, _visible_board_rows(len(promised), row_budget)
+
+    output = [summary, ""]
     for r in rows[:shown]:
         g = r["g"]
         age = r["age"] + ("!" if r["overdue"] else "")
         observed = "observed" if r["observation"] else ""
         observed_age = _age(r["observation"]["at"])[1] if r["observation"] else ""
-        print(f"  {r['status']:<10}  {age:<5}  {g['id']:<12}  {g['kind']:<12}  "
-              f"{_clip(g['question'], body)}")
-        print(f"  {observed:<10}  {observed_age:<5}  {'':<12}  {'worsens →':<12}  "
-              f"{_clip(g['decay'], body)}")
+        output.append(
+            f"  {r['status']:<10}  {age:<5}  {g['id']:<12}  {g['kind']:<12}  "
+            f"{_clip(g['question'], body)}"
+        )
+        output.append(
+            f"  {observed:<10}  {observed_age:<5}  {'':<12}  {'worsens →':<12}  "
+            f"{_clip(g['decay'], body)}"
+        )
 
     hidden = len(rows) - shown
     if hidden > 0:
-        print(f"\n  {hidden} more below the fold. The queue no longer fits one screen,")
-        print("  which is the finding, not a display bug. `janus board --all` shows every one.")
+        output.append(
+            f"  {hidden} more below the fold; janus board --all shows every gate."
+        )
 
     if promised:
-        shown_p = len(promised) if a.all else max((promised_lines - 2) // 2, 1)
-        print(f"\n  PROMISED, NOT DELIVERED — {len(promised)} approved, still waiting to land")
+        output.append(
+            f"  PROMISED, NOT DELIVERED — {len(promised)} approved, still waiting to land"
+        )
         for r in promised[:shown_p]:
             g = r["g"]
             observed = "observed" if r["observation"] else ""
             observed_age = _age(r["observation"]["at"])[1] if r["observation"] else ""
-            print(f"  {r['status']:<10}  {r['age']:<5}  {g['id']:<12}  {g['kind']:<12}  "
-                  f"{_clip(g['question'], body)}")
-            print(f"  {observed:<10}  {observed_age:<5}  {'':<12}  {'check →':<12}  "
-                  f"{_clip(g['effective_delivery_check'], body)}")
+            output.append(
+                f"  {r['status']:<10}  {r['age']:<5}  {g['id']:<12}  {g['kind']:<12}  "
+                f"{_clip(g['question'], body)}"
+            )
+            output.append(
+                f"  {observed:<10}  {observed_age:<5}  {'':<12}  {'check →':<12}  "
+                f"{_clip(g['effective_delivery_check'], body)}"
+            )
         hidden_p = len(promised) - shown_p
         if hidden_p > 0:
-            print(f"\n  {hidden_p} more promise(s) below the fold — `janus board --all`.")
+            output.append(
+                f"  {hidden_p} more promise(s) below the fold; janus board --all shows all."
+            )
 
     if unwatched:
-        print(f"\n  {unwatched} approved gate(s) carry no delivery check —"
-              " their consumer outcomes are unmeasured.")
+        output.append(
+            f"  {unwatched} approved gate(s) carry no delivery check —"
+            " their consumer outcomes are unmeasured."
+        )
 
-    print(textwrap.dedent("""
-        Sorted by observed decay, then a passed horizon (!), then the longest wait.
-        'unmeasured' means the decay sentence carries no re-runnable check — unknown,
-        which is not the same as fine. `janus board --check` runs the checks that exist.
-        A measured status shows its observation age on the following line; gate and
-        ruling age stay on the first line. Janus does not invent a freshness threshold.
-        A ruling closes a decision; it does not make the promised thing exist, so an
-        approved gate stays under PROMISED until its own check says it landed.
-        `janus show <id>` for the full question and its options.
-        Reading this board is not authority to act.""").rstrip())
+    output.extend(footer)
+    fitted = [line if len(line) <= width else line[: width - 1] + "…" for line in output]
+    print("\n".join(fitted))
     return 0
 
 
