@@ -69,9 +69,13 @@ def digest_file(path: str | Path) -> str:
     if not p.is_file():
         raise JanusError(f"cannot bind: {p} is not a readable file")
     h = hashlib.sha256()
-    with p.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(65536), b""):
-            h.update(chunk)
+    try:
+        with p.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(65536), b""):
+                h.update(chunk)
+    except OSError as e:
+        detail = e.strerror or type(e).__name__
+        raise JanusError(f"cannot bind: {p} is not readable ({detail})") from e
     return h.hexdigest()
 
 

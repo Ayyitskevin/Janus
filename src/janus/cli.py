@@ -772,12 +772,17 @@ def cmd_doctor(a, conn) -> int:
                                for g in core.list_gates(conn, state=st)]
     for g in actionable:
         if g["binding_sha256"]:
+            if (g["state"] in core.RULED_STATES and g["ruling"]
+                    and g["ruling"]["bound_sha256"] is None):
+                print(f"integrity   {g['id']} ({g['state']}) — bound ruling has "
+                      "no ruling-time digest")
+                problems += 1
             ok, sentence = core.verify_binding(
                 g["binding_kind"], g["binding_locator"], g["binding_sha256"])
             if ok is False:
                 drifted += 1
                 print(f"drift       {g['id']} ({g['state']}) — bound artifact no longer matches")
-            elif ok is None:
+            elif ok is None and g["binding_kind"] != "text":
                 # "Changed" and "cannot be checked" are different facts and only
                 # the first was counted, so a binding Janus cannot read at all
                 # produced no doctor line — indistinguishable from a clean one.

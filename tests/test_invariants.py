@@ -13,6 +13,7 @@ paid for elsewhere in the fleet.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -118,7 +119,9 @@ def test_a_bound_gate_cannot_be_ruled_on_when_its_bytes_cannot_be_read(
     assert gate["ruling"] is None
 
 
-def test_the_database_refuses_a_digestless_ruling_on_a_bound_gate(conn, tmp_path):
+@pytest.mark.parametrize("state", core.RULED_STATES)
+def test_the_database_refuses_a_digestless_ruling_on_a_bound_gate(
+        conn, tmp_path, state):
     """The invariant must hold even when a caller bypasses Python."""
     art = tmp_path / "bound.txt"
     art.write_text("reviewed bytes")
@@ -129,7 +132,7 @@ def test_the_database_refuses_a_digestless_ruling_on_a_bound_gate(conn, tmp_path
             "INSERT INTO rulings "
             "(gate_id, state, ruled_at, ruled_by, reason, bound_sha256) "
             "VALUES (?,?,?,?,?,?)",
-            (g, "approved", core.now(), "kevin", "rule anyway", None),
+            (g, state, core.now(), "kevin", "rule anyway", None),
         )
     conn.rollback()
     assert core.get_gate(conn, g)["state"] == "open"
@@ -1370,6 +1373,65 @@ def test_doctor_reports_a_binding_it_cannot_verify(tmp_path):
     assert "bound artifact no longer matches" not in r.stdout, r.stdout
     # a readable binding still says nothing: this is a report of problems only
     assert f"unverifiable {clean}" not in r.stdout, r.stdout
+
+
+def test_doctor_reports_a_legacy_bound_ruling_with_no_digest(tmp_path):
+    """Readable raised bytes must not hide an invalid historical ruling."""
+    db = tmp_path / "d.db"
+    conn = core.connect(db)
+    art = tmp_path / "still-readable.md"
+    art.write_text("v1")
+    g = _gate(conn, question="legacy digestless ruling",
+              binding=core.resolve_binding("file", str(art)))
+    conn.execute("DROP TRIGGER ruling_bound_gate_requires_digest")
+    conn.execute(
+        "INSERT INTO rulings "
+        "(gate_id, state, ruled_at, ruled_by, reason, bound_sha256) "
+        "VALUES (?,?,?,?,?,?)",
+        (g, "approved", core.now(), "kevin", "legacy ruling", None),
+    )
+    conn.commit()
+
+    r = _cli(db, "doctor")
+    assert r.returncode == 1, r.stdout
+    assert f"integrity   {g} (approved)" in r.stdout, r.stdout
+    assert "bound ruling has no ruling-time digest" in r.stdout, r.stdout
+
+
+def test_doctor_does_not_call_inline_text_unverifiable(tmp_path):
+    """Inline text is self-contained; there is no external read to retry."""
+    db = tmp_path / "d.db"
+    conn = core.connect(db)
+    g = _gate(conn, question="inline binding",
+              binding=core.resolve_binding("text", "the exact proposal"))
+    core.close_gate(conn, g, state="approved", reason="these bytes", actor="kevin")
+
+    r = _cli(db, "doctor")
+    assert r.returncode == 0, r.stdout
+    assert f"unverifiable {g}" not in r.stdout, r.stdout
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() == 0,
+                    reason="requires an unprivileged POSIX process")
+def test_permission_denied_binding_is_a_structured_refusal(tmp_path):
+    """Unreadable means CANNOT VERIFY, never a raw filesystem traceback."""
+    db = tmp_path / "d.db"
+    conn = core.connect(db)
+    art = tmp_path / "permission-denied.md"
+    art.write_text("v1")
+    g = _gate(conn, question="binding loses read permission",
+              binding=core.resolve_binding("file", str(art)))
+    art.chmod(0)
+    try:
+        r = _cli(db, "decide", g, "--approve", "--reason", "ruling anyway")
+    finally:
+        art.chmod(0o600)
+
+    assert r.returncode != 0, r.stdout
+    assert "CANNOT VERIFY" in r.stderr, r.stderr
+    assert "Permission denied" in r.stderr, r.stderr
+    assert "Traceback" not in r.stderr, r.stderr
+    assert core.get_gate(core.connect(db), g)["state"] == "open"
 
 
 @pytest.mark.parametrize("decision", ("--approve", "--refuse"))
