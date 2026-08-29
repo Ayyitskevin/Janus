@@ -1933,6 +1933,20 @@ def test_ruling_on_an_unverifiable_binding_is_refused(tmp_path, decision):
     assert gate["ruling"] is None
 
 
+def test_inline_text_binding_can_still_be_ruled_on(tmp_path):
+    """Inline text has no external artifact that can disappear between reads."""
+    db = tmp_path / "d.db"
+    conn = core.connect(db)
+    g = _gate(conn, question="rule on these inline bytes",
+              binding=core.resolve_binding("text", "the exact proposal"))
+
+    r = _cli(db, "decide", g, "--approve", "--reason", "these bytes are right")
+    assert r.returncode == 0, r.stderr
+    gate = core.get_gate(core.connect(db), g)
+    assert gate["state"] == "approved"
+    assert gate["ruling"]["bound_sha256"] == gate["binding_sha256"]
+
+
 def test_show_says_when_a_ruling_bound_nothing(tmp_path):
     """Legacy invalid rows stay visible after new invalid writes are refused.
 
