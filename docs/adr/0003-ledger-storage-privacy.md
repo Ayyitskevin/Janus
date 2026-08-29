@@ -47,13 +47,14 @@ Inspection never repairs. Existing directories and files are not chmodded by an
 ordinary open or by `doctor`; the output says so and exits nonzero. A human can
 then choose the maintenance window, backup, and exact permission change. This
 keeps feedback in Janus without turning a diagnostic into a hidden migration.
-Broad database or sidecar modes inside a replacement-safe directory remain
-diagnostic findings. A writable, non-sticky containing directory is different:
-another OS user can replace the inspected name before SQLite opens it, so Janus
-refuses all commands until the operator repairs or relocates that directory.
-Other identity hazards (symlinks, wrong types or owners, and extra hard links)
-are likewise refused before SQLite opens them. `doctor` prints those findings
-and skips checks that would require an unsafe open.
+Any wrong mode is a refusal, not only a diagnostic finding. A writable database
+can be mutated directly; a writable containing directory can replace the main
+database; and even a sticky writable directory leaves absent WAL, SHM, or
+journal names available for another user to create. Janus therefore requires
+the containing directory to be exactly `0700` and every present family file to
+be exactly `0600`. Other identity hazards (symlinks, wrong types or owners, and
+extra hard links) are likewise refused before SQLite opens them. `doctor` prints
+those findings and skips checks that would require an unsafe open.
 
 The boundary is shared by ordinary writable commands and the stable export's
 separate read-only connector. Export still does not create or migrate a ledger;
@@ -64,9 +65,8 @@ and only then opens SQLite with `mode=ro`.
 
 - A new ledger remains private under every measured umask from `000` through
   `777`, including its live WAL and shared-memory files.
-- Existing broad file modes become loud but keep working only within a
-  replacement-safe directory. A replaceable directory fails closed until the
-  owner schedules deliberate repair.
+- Existing broad storage fails closed until the owner schedules deliberate
+  repair. No ordinary command or export silently accepts a weaker boundary.
 - Alternate locations no longer inherit unsafe creation defaults or
   replaceable parent paths silently.
 - Database-family symlinks, wrong types/owners, and hard-link aliases are
@@ -81,11 +81,11 @@ and only then opens SQLite with `mode=ro`.
 - **Automatically chmod every open.** Rejected: it mutates live external state,
   can surprise intentional group access, and makes a diagnostic an unannounced
   migration.
-- **Allow an existing database inside a writable directory.** Rejected after
-  fixed-point review reproduced replacement between identity inspection and
-  SQLite's pathname open. This would preserve compatibility by giving up ledger
-  integrity. Installation must instead be sequenced after deliberate repair;
-  this change does not perform that repair.
+- **Allow broad existing modes when one pathname looks stable.** Rejected after
+  fixed-point review reproduced database replacement, direct file mutation, and
+  creation of absent sidecars in a sticky directory. This would preserve
+  compatibility by giving up ledger integrity. Installation must instead be
+  sequenced after deliberate repair; this change does not perform that repair.
 - **Inspect only the main database.** Rejected: in WAL mode the database family
   includes sidecars whose permissions can disclose committed gate content.
 

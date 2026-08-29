@@ -64,8 +64,8 @@ Invariant tests additionally prove:
 - dangling database symlinks create no target under umasks `000` and `777`;
 - a symlink anywhere in a new ledger's directory chain creates no database;
 - replaceable existing parents are refused before database creation;
-- an existing ledger in a writable non-sticky directory is refused, while the
-  equivalent sticky directory remains usable;
+- existing ledgers in writable sticky or non-sticky directories are refused;
+- group/world-writable database and sidecar files are refused;
 - a failed descriptor hardening removes the exact empty file Janus created;
 - rollback-journal identity is inspected before `doctor` opens SQLite;
 - stable export refuses replaceable directories, database/directory symlinks,
@@ -89,7 +89,12 @@ stable export seam: its read-only connector resolved and opened the path
 directly. Export now calls the shared identity preflight before its unchanged
 `mode=ro` open, with adversarial coverage for both connectors.
 
-After implementation, the exact full repository gate passed **120 tests**. A
+The final standards pass rejected the remaining mode exceptions: a writable
+database is directly mutable, and sticky protection does not cover a sidecar
+name that is still absent. The final invariant is exact and shared:
+`0700` directory, `0600` family files, safe identity, or refusal.
+
+After implementation, the exact full repository gate passed **121 tests**. A
 descriptor-hardening mutation then produced one failure under umask `777` while
 the `000` case still passed; restoring the exact candidate returned both cases
 to green. A non-editable wheel installed into a clean Python 3.12 environment;

@@ -383,10 +383,12 @@ def storage_open_blocker(db_path: Path | None = None) -> str | None:
         )
     if info.st_nlink != 1:
         return f"database has {info.st_nlink} hard links (expected 1): {path}"
+    database_mode = stat.S_IMODE(info.st_mode)
+    if database_mode != PRIVATE_FILE_MODE:
+        return f"database mode {database_mode:04o} (expected 0600): {path}"
     chain_finding = _directory_chain_finding(
         path.parent,
-        private_leaf=False,
-        protect_child=True,
+        private_leaf=True,
     )
     if chain_finding:
         return chain_finding
@@ -410,6 +412,9 @@ def storage_open_blocker(db_path: Path | None = None) -> str | None:
             )
         if sidecar_info.st_nlink != 1:
             return f"{label} has {sidecar_info.st_nlink} hard links (expected 1): {sidecar}"
+        sidecar_mode = stat.S_IMODE(sidecar_info.st_mode)
+        if sidecar_mode != PRIVATE_FILE_MODE:
+            return f"{label} mode {sidecar_mode:04o} (expected 0600): {sidecar}"
     return None
 
 
