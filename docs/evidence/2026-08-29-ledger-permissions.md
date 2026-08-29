@@ -70,6 +70,8 @@ Invariant tests additionally prove:
   refused without creating its symlink target;
 - directory and database creation failures return structured CLI refusals, not
   tracebacks;
+- descriptor-close failures remain structured, and cannot preempt exact-inode
+  cleanup after failed hardening;
 - a failed descriptor hardening removes the exact empty file Janus created;
 - rollback-journal identity is inspected before `doctor` opens SQLite;
 - stable export refuses replaceable directories, database/directory symlinks,
@@ -103,7 +105,11 @@ twice, allowing a new entry to inherit a stale preflight result, and filesystem
 creation errors escaped the CLI boundary. Setup now uses one absence snapshot,
 exclusive creation, a mandatory post-create preflight, and structured errors.
 
-After implementation, the exact full repository gate passed **123 tests**. A
+The final descriptor fault injection found `close(2)` could override that
+structured refusal and skip failed-hardening cleanup. Descriptor invalidation
+is now centralized; cleanup runs even when close also reports an error.
+
+After implementation, the exact full repository gate passed **124 tests**. A
 descriptor-hardening mutation then produced one failure under umask `777` while
 the `000` case still passed; restoring the exact candidate returned both cases
 to green. A non-editable wheel installed into a clean Python 3.12 environment;

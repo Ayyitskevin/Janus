@@ -345,35 +345,56 @@ def _create_private_database(path: Path) -> None:
     except OSError as exc:
         detail = exc.strerror or type(exc).__name__
         raise JanusError(f"cannot create ledger file {path}: {detail}") from exc
+
+    def close_descriptor() -> OSError | None:
+        nonlocal descriptor
+        current = descriptor
+        descriptor = -1
+        try:
+            os.close(current)
+        except OSError as exc:
+            return exc
+        return None
+
     try:
         created = os.fstat(descriptor)
     except OSError as exc:
-        try:
-            os.close(descriptor)
-        except OSError:
-            pass
+        close_error = close_descriptor()
         detail = exc.strerror or type(exc).__name__
+        close_detail = ""
+        if close_error:
+            close_detail = f"; descriptor close also failed: {close_error}"
         raise JanusError(
-            f"cannot inspect newly created ledger {path}: {detail}; "
+            f"cannot inspect newly created ledger {path}: {detail}{close_detail}; "
             "the private entry was retained for operator inspection"
         ) from exc
+
+    # os.open applies umask to its mode. fchmod operates on the descriptor that
+    # won O_EXCL, avoiding a close/reopen pathname race and making the new file
+    # exactly 0600 even under an over-restrictive ambient umask.
+    # Sources: https://docs.python.org/3.11/library/os.html#os.open
+    #          https://docs.python.org/3.11/library/os.html#os.fchmod
+    hardening_error: BaseException | None = None
+    close_error: OSError | None = None
     try:
-        # os.open applies umask to its mode. fchmod operates on the descriptor
-        # that won O_EXCL, avoiding a close/reopen pathname race and making the
-        # new file exactly 0600 even under an over-restrictive ambient umask.
-        # Sources: https://docs.python.org/3.11/library/os.html#os.open
-        #          https://docs.python.org/3.11/library/os.html#os.fchmod
-        try:
-            os.fchmod(descriptor, PRIVATE_FILE_MODE)
-        except (AttributeError, OSError) as exc:
-            os.close(descriptor)
-            descriptor = -1
-            removed = _unlink_created_file(path, created)
-            suffix = "" if removed else "; the created entry could not be safely removed"
-            raise JanusError(f"cannot secure new ledger {path}{suffix}") from exc
+        os.fchmod(descriptor, PRIVATE_FILE_MODE)
+    except (AttributeError, OSError) as exc:
+        hardening_error = exc
     finally:
-        if descriptor >= 0:
-            os.close(descriptor)
+        close_error = close_descriptor()
+
+    if hardening_error:
+        removed = _unlink_created_file(path, created)
+        suffix = "" if removed else "; the created entry could not be safely removed"
+        if close_error:
+            suffix += f"; descriptor close also failed: {close_error}"
+        raise JanusError(f"cannot secure new ledger {path}{suffix}") from hardening_error
+    if close_error:
+        detail = close_error.strerror or type(close_error).__name__
+        raise JanusError(
+            f"cannot finalize new ledger {path}: {detail}; "
+            "the private entry was retained for operator inspection"
+        ) from close_error
 
     current = _lstat(path)
     if (

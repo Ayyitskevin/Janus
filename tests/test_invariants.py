@@ -217,6 +217,39 @@ def test_failed_permission_application_removes_the_exact_new_file(tmp_path, monk
     assert not db.exists()
 
 
+def test_descriptor_close_errors_are_structured_and_do_not_skip_cleanup(
+    tmp_path, monkeypatch
+):
+    normal = tmp_path / "normal-close.db"
+    real_close = os.close
+
+    def close_then_report_error(descriptor):
+        real_close(descriptor)
+        raise OSError(errno.EIO, "test close refusal")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(core.os, "close", close_then_report_error)
+        with pytest.raises(JanusError, match="cannot finalize new ledger"):
+            core._create_private_database(normal)
+    assert normal.exists()
+    normal.unlink()
+
+    combined = tmp_path / "combined-failure.db"
+
+    def refuse_fchmod(descriptor, mode):
+        raise PermissionError(errno.EACCES, "test fchmod refusal")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(core.os, "fchmod", refuse_fchmod)
+        patch.setattr(core.os, "close", close_then_report_error)
+        with pytest.raises(
+            JanusError,
+            match="cannot secure new ledger.*descriptor close also failed",
+        ):
+            core._create_private_database(combined)
+    assert not combined.exists()
+
+
 def test_missing_database_cannot_appear_between_preflight_and_creation(tmp_path, monkeypatch):
     db = tmp_path / "private" / "janus.db"
     target = tmp_path / "broad-target.db"
