@@ -88,6 +88,11 @@ Invariant tests additionally prove:
 - a successful WAL-mode export may materialize only `-wal`/`-shm`
   coordination entries; the main database bytes remain unchanged, new entries
   are `0600`, and a post-read mode fault is refused;
+- export captures one absolute lexical path for both boundary checks, so a
+  process CWD change during the snapshot cannot redirect the post-read check;
+- an export connection-close failure is translated to a structured refusal,
+  never masks the primary export error, and never skips the post-read storage
+  check;
 - `doctor` exits `1` on broad existing storage while its modes remain
   byte-for-byte unchanged;
 - `doctor` exits `1` without creating a missing ledger, reports a storage
@@ -128,6 +133,14 @@ The final descriptor fault injection found `close(2)` could override that
 structured refusal and skip failed-hardening cleanup. Descriptor invalidation
 is now centralized; cleanup runs even when close also reports an error.
 
+The final export review found the analogous connection cleanup gap and a
+relative-path timing gap: `sqlite3.Connection.close()` could escape untyped or
+mask the primary refusal, and a CWD change could redirect a second path
+normalization. Export now captures one absolute path, composes cleanup failures
+without replacing the primary error, and runs the same full-family post-check
+after success, an export refusal, or a SQLite close failure. Three fault
+regressions pin those cases.
+
 A local Linux ACL probe set a default named-user `rwx` ACL on the creation
 parent. Newly created directories and database retained that entry with
 `effective:---` while modes remained `0700`/`0600`. Adding an effective named
@@ -135,12 +148,14 @@ user grant changed the database mode to `0670`; `chmod 0600` restored a zero ACL
 mask and `effective:---`. This matches the `acl(5)` access-check algorithm: the
 group mode bits correspond to the ACL mask that caps named-user/group entries.
 
-After implementation, the exact full repository gate passed **136 tests**. A
+After implementation, the exact full repository gate passed **139 tests**. A
 descriptor-hardening mutation then produced one failure under umask `777` while
 the `000` case still passed; restoring the exact candidate returned both cases
 to green. A non-editable wheel installed into a clean Python 3.12 environment;
 real CLI creation under umasks `000` and `777` produced `0700/0700/0700/0600`
 for the three nested directories and database, and installed `janus doctor`
-reported the family private. Hosted-CI and independent-review evidence are
-intentionally not claimed here until those gates run on a committed exact
-candidate.
+reported the family private. Both hosted Python 3.11-3.14 matrices passed at the
+implementation candidate. Independent security review found no material
+runtime or security defect and held only this evidence document's stale test
+count and omitted final regressions; this update addresses that documentation
+hold. The PR and fleet handoff carry the final exact-head review state.
