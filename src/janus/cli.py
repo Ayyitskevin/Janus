@@ -143,6 +143,11 @@ def cmd_show(a, conn) -> int:
         print(f"            reason: {r['reason']}")
         if r["option_id"]:
             print(f"            chose:  {r['option_id']}")
+        if r["bound_sha256"] is None and g["binding_sha256"]:
+            # A missing digest printed as no line at all, which reads exactly
+            # like a gate that had no binding to begin with. Absent is not fine.
+            print("            ruled on bytes: NONE RECORDED — Janus could not "
+                  "read the artifact when this ruling was written")
         if r["bound_sha256"]:
             print(f"            ruled on bytes @ {r['bound_sha256'][:16]}")
             if g["binding_sha256"] and r["bound_sha256"] != g["binding_sha256"]:
@@ -199,6 +204,23 @@ def _close(a, conn, state: str, reason: str) -> int:
                     "was raised against different content; confirm you have "
                     "reviewed what is there now."
                 )
+        elif ok is None:
+            # Three states, three treatments. `verify_binding` is deliberately
+            # tri-state and its docstring says None "must never read as fine" —
+            # but only the False branch existed, so an UNVERIFIABLE binding was
+            # ruled on in total silence. Worse than silent: `digest_of_live`
+            # swallows the read error and returns None, so the ruling is written
+            # with bound_sha256 = NULL. Invariant 2 is that a ruling binds a
+            # digest and not a name; a ruling that binds NOTHING cannot be
+            # re-checked by anyone, ever. Janus states this and stops — it does
+            # not refuse, because enforcing would put Janus in the permission
+            # path (ADR 0001), and refusing here would strand every gate whose
+            # artifact legitimately moved.
+            print(f"warning: {sentence}", file=sys.stderr)
+            print("warning: Janus cannot re-derive this binding, so this ruling "
+                  "will record NO bytes at all. It will not be re-checkable. "
+                  "Re-raise the gate with a readable binding if that matters.",
+                  file=sys.stderr)
     g = core.close_gate(conn, a.gate_id, state=state, reason=reason, actor=actor,
                         option_id=getattr(a, "option", None))
     print(f"{a.gate_id} is now {g['state']} (by {actor})")
@@ -698,6 +720,7 @@ def cmd_doctor(a, conn) -> int:
     open_gates = core.list_gates(conn, state="open")
     print(f"open gates  {len(open_gates)}")
     drifted = 0
+    unverifiable = 0
     # Drift is only worth reporting where it can still mislead someone into
     # acting: a gate still waiting, or one a human actually RULED on, whose
     # consumer may yet act on that ruling. A superseded, withdrawn or expired
@@ -708,13 +731,22 @@ def cmd_doctor(a, conn) -> int:
                                for g in core.list_gates(conn, state=st)]
     for g in actionable:
         if g["binding_sha256"]:
-            ok, _ = core.verify_binding(
+            ok, sentence = core.verify_binding(
                 g["binding_kind"], g["binding_locator"], g["binding_sha256"])
             if ok is False:
                 drifted += 1
                 print(f"drift       {g['id']} ({g['state']}) — bound artifact no longer matches")
+            elif ok is None:
+                # "Changed" and "cannot be checked" are different facts and only
+                # the first was counted, so a binding Janus cannot read at all
+                # produced no doctor line — indistinguishable from a clean one.
+                unverifiable += 1
+                print(f"unverifiable {g['id']} ({g['state']}) — {sentence}")
     if drifted:
         print(f"drift       {drifted} actionable gate(s) bound to changed artifacts")
+    if unverifiable:
+        print(f"unverifiable {unverifiable} actionable gate(s) whose binding cannot be "
+              "checked at all — unknown, which is not the same as fine")
     seat = core.seat_actor(getattr(a, "seat", None))
     print(f"attribution writes will be attributed to {seat}")
     print("\nJanus records pending authority; it does not grant authority.")
