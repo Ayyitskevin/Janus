@@ -107,6 +107,31 @@ source distribution and wheel, then installs that wheel into a clean virtual
 environment and checks the CLI plus packaged migrations. Keep it green before
 pushing; CI repeats the same gate on every branch push and pull request.
 
+### Prepare an upgrade without deploying it
+
+Janus keeps deployment behind a separate human gate, but the repository owns
+the reversible preparation work. From a clean candidate checkout, create a
+private `0700` parent and pass the exact commit reported by the currently
+installed copy:
+
+```bash
+rollback_commit=$(awk '$1 == "commit" {print $2}' ~/.local/share/janus/INSTALLED)
+prepared_parent=$(mktemp -d "$HOME/.local/share/janus/preparation.XXXXXX")
+python scripts/prepare_upgrade.py \
+  --db "$HOME/.janus/janus.db" \
+  --output "$prepared_parent/bundle" \
+  --rollback-commit "$rollback_commit"
+```
+
+The command builds candidate and rollback wheels from exact committed trees,
+creates a coherent SQLite backup, migrates only a private rehearsal copy, and
+proves the rollback wheel can still read that copy. The retained manifest is
+closed by [the upgrade-preparation v1
+schema](docs/spec/upgrade-preparation-v1.schema.json) and always records
+`deployment_performed: false`. It does not chmod the live ledger, install code,
+or authorize deployment. Full refusal and privacy semantics are in [ADR
+0004](docs/adr/0004-rehearsed-upgrades.md).
+
 ## Why this exists
 
 A well-run agent fleet manufactures human-decision debt on purpose. The

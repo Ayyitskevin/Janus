@@ -147,6 +147,20 @@ has a horizon. Counts, denominators, command, and installed-copy context are
 preserved in `docs/evidence/2026-08-29-adoption-scorecard.md`; this dated
 measurement does not claim M2 board use or M3 export consumption.
 
+## Operational maturity — upgrade preparation built, deployment not performed
+
+The repository now owns the reversible work that must precede a live upgrade:
+exact candidate and rollback artifacts, a coherent private SQLite backup,
+forward-migration rehearsal on a copy, rollback-reader rehearsal, retained
+hashes, and a closed manifest. See ADR 0004 and
+`docs/spec/upgrade-preparation-v1.md`.
+
+This is intentionally not a shipped-install claim. The tool records
+`deployment_performed: false` and never changes live permissions, schema, rows,
+installed code, or services. The installed mickey ledger remains legacy state
+until Kevin approves a separately reviewed maintenance operation. A successful
+preparation bundle is evidence for that decision, not authority to deploy.
+
 ## Later, explicitly not next
 
 - Emitting a pointer into the conversation relay when a gate is raised. Useful,
