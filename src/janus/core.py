@@ -515,14 +515,13 @@ def storage_privacy_findings(db_path: Path | None = None) -> list[str]:
         required: bool,
     ) -> None:
         try:
-            info = target.lstat()
-        except FileNotFoundError:
+            info = _lstat(target)
+        except StorageBoundaryError as exc:
+            findings.append(exc.finding)
+            return
+        if info is None:
             if required:
                 findings.append(f"{label} is missing: {target}")
-            return
-        except OSError as exc:
-            detail = exc.strerror or type(exc).__name__
-            findings.append(f"{label} cannot be inspected: {target} ({detail})")
             return
         if stat.S_ISLNK(info.st_mode):
             findings.append(f"{label} is a symbolic link: {target}")
