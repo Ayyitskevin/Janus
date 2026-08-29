@@ -12,6 +12,7 @@ paid for elsewhere in the fleet.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import stat
@@ -214,6 +215,50 @@ def test_failed_permission_application_removes_the_exact_new_file(tmp_path, monk
     with pytest.raises(JanusError, match="cannot secure new ledger"):
         core.connect(db)
     assert not db.exists()
+
+
+def test_missing_database_cannot_appear_between_preflight_and_creation(tmp_path, monkeypatch):
+    db = tmp_path / "private" / "janus.db"
+    target = tmp_path / "broad-target.db"
+    create_parents = core._create_private_parents
+
+    def create_parents_then_substitute(parent):
+        create_parents(parent)
+        db.symlink_to(target)
+
+    monkeypatch.setattr(core, "_create_private_parents", create_parents_then_substitute)
+    with pytest.raises(JanusError, match="appeared during private creation"):
+        core.connect(db)
+    assert not target.exists()
+
+
+def test_storage_creation_os_errors_are_structured_cli_refusals(
+    tmp_path, monkeypatch, capsys
+):
+    from janus import cli
+
+    def refuse_mkdir(path, *args, **kwargs):
+        raise PermissionError(errno.EACCES, "test mkdir refusal", str(path))
+
+    with monkeypatch.context() as patch:
+        patch.setattr(core.Path, "mkdir", refuse_mkdir)
+        assert cli.main(["--db", str(tmp_path / "mkdir" / "janus.db"), "list"]) == 2
+    mkdir_error = capsys.readouterr().err
+    assert "janus: cannot create ledger directory" in mkdir_error
+    assert "Traceback" not in mkdir_error
+
+    parent = tmp_path / "open"
+    parent.mkdir(mode=0o700)
+
+    def refuse_open(*args, **kwargs):
+        raise OSError(errno.ENOSPC, "test open refusal")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(core.os, "open", refuse_open)
+        assert cli.main(["--db", str(parent / "janus.db"), "list"]) == 2
+    open_error = capsys.readouterr().err
+    assert "janus: cannot create ledger file" in open_error
+    assert "Traceback" not in open_error
 
 
 def test_doctor_fails_loudly_without_repairing_existing_broad_modes(tmp_path):

@@ -66,6 +66,10 @@ Invariant tests additionally prove:
 - replaceable existing parents are refused before database creation;
 - existing ledgers in writable sticky or non-sticky directories are refused;
 - group/world-writable database and sidecar files are refused;
+- a database entry appearing between preflight and exclusive creation is
+  refused without creating its symlink target;
+- directory and database creation failures return structured CLI refusals, not
+  tracebacks;
 - a failed descriptor hardening removes the exact empty file Janus created;
 - rollback-journal identity is inspected before `doctor` opens SQLite;
 - stable export refuses replaceable directories, database/directory symlinks,
@@ -94,7 +98,12 @@ database is directly mutable, and sticky protection does not cover a sidecar
 name that is still absent. The final invariant is exact and shared:
 `0700` directory, `0600` family files, safe identity, or refusal.
 
-After implementation, the exact full repository gate passed **121 tests**. A
+The next timing pass found two adjacent failure paths: absence was sampled
+twice, allowing a new entry to inherit a stale preflight result, and filesystem
+creation errors escaped the CLI boundary. Setup now uses one absence snapshot,
+exclusive creation, a mandatory post-create preflight, and structured errors.
+
+After implementation, the exact full repository gate passed **123 tests**. A
 descriptor-hardening mutation then produced one failure under umask `777` while
 the `000` case still passed; restoring the exact candidate returned both cases
 to green. A non-editable wheel installed into a clean Python 3.12 environment;

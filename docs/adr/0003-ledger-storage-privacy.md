@@ -32,7 +32,10 @@ Sticky directories such as `/tmp` are accepted only when their protected child
 has an expected owner. An existing containing directory must already be owned by
 the process user at exactly `0700`; Janus refuses rather than chmodding it. The
 new file is re-identified after descriptor hardening, and a failed hardening
-attempt removes only the exact inode Janus created.
+attempt removes only the exact inode Janus created. Connection setup snapshots
+absence once and always takes the exclusive-creation path from that snapshot;
+an entry that appears during setup is a refusal, never stale permission to open.
+Filesystem creation errors are translated into operator-facing refusals.
 
 This boundary deliberately requires POSIX owner and mode semantics. On a
 platform without them Janus refuses with an operator-facing error rather than
