@@ -213,22 +213,16 @@ def _close(a, conn, state: str, reason: str) -> int:
                     "reviewed what is there now."
                 )
         elif ok is None:
-            # Three states, three treatments. `verify_binding` is deliberately
-            # tri-state and its docstring says None "must never read as fine" —
-            # but only the False branch existed, so an UNVERIFIABLE binding was
-            # ruled on in total silence. Worse than silent: `digest_of_live`
-            # swallows the read error and returns None, so the ruling is written
-            # with bound_sha256 = NULL. Invariant 2 is that a ruling binds a
-            # digest and not a name; a ruling that binds NOTHING cannot be
-            # re-checked by anyone, ever. Janus states this and stops — it does
-            # not refuse, because enforcing would put Janus in the permission
-            # path (ADR 0001), and refusing here would strand every gate whose
-            # artifact legitimately moved.
-            print(f"warning: {sentence}", file=sys.stderr)
-            print("warning: Janus cannot re-derive this binding, so this ruling "
-                  "will record NO bytes at all. It will not be re-checkable. "
-                  "Re-raise the gate with a readable binding if that matters.",
-                  file=sys.stderr)
+            # A refusal here protects Janus's own record contract; it does not
+            # answer whether any consumer may act. Persisting an approved or
+            # refused ruling with no digest would violate invariant 2 and leave
+            # a record that can never be re-checked. The core and migration also
+            # enforce this so a caller cannot bypass the CLI.
+            raise JanusError(
+                f"refusing to rule while the binding is unverifiable: {sentence}. "
+                "A ruling must record the bytes ruled on. Restore the artifact, "
+                "or supersede and re-raise the gate with a readable binding."
+            )
     g = core.close_gate(conn, a.gate_id, state=state, reason=reason, actor=actor,
                         option_id=getattr(a, "option", None))
     print(f"{a.gate_id} is now {g['state']} (by {actor})")
