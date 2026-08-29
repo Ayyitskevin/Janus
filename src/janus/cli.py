@@ -212,7 +212,7 @@ def _close(a, conn, state: str, reason: str) -> int:
                     "was raised against different content; confirm you have "
                     "reviewed what is there now."
                 )
-        elif ok is None:
+        elif ok is None and g["binding_kind"] != "text":
             # A refusal here protects Janus's own record contract; it does not
             # answer whether any consumer may act. Persisting an approved or
             # refused ruling with no digest would violate invariant 2 and leave
