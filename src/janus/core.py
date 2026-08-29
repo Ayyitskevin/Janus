@@ -294,10 +294,21 @@ def _create_private_parents(parent: Path) -> None:
                     f"cannot create a private ledger: unsafe directory appeared: {directory}"
                 )
             continue
+        except OSError as exc:
+            detail = exc.strerror or type(exc).__name__
+            raise JanusError(
+                f"cannot create ledger directory {directory}: {detail}"
+            ) from exc
         # mkdir combines mode with umask. Widen only the directory this process
         # just created to the exact owner-only contract; existing paths are never
         # repaired as a side effect of opening Janus.
-        directory.chmod(PRIVATE_DIRECTORY_MODE)
+        try:
+            directory.chmod(PRIVATE_DIRECTORY_MODE)
+        except OSError as exc:
+            detail = exc.strerror or type(exc).__name__
+            raise JanusError(
+                f"cannot secure new ledger directory {directory}: {detail}"
+            ) from exc
     finding = _directory_chain_finding(parent, private_leaf=True)
     if finding:
         raise JanusError(f"cannot create a private ledger: {finding}")
@@ -331,7 +342,21 @@ def _create_private_database(path: Path) -> None:
         raise JanusError(
             f"database path appeared during private creation; inspect and retry: {path}"
         ) from exc
-    created = os.fstat(descriptor)
+    except OSError as exc:
+        detail = exc.strerror or type(exc).__name__
+        raise JanusError(f"cannot create ledger file {path}: {detail}") from exc
+    try:
+        created = os.fstat(descriptor)
+    except OSError as exc:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        detail = exc.strerror or type(exc).__name__
+        raise JanusError(
+            f"cannot inspect newly created ledger {path}: {detail}; "
+            "the private entry was retained for operator inspection"
+        ) from exc
     try:
         # os.open applies umask to its mode. fchmod operates on the descriptor
         # that won O_EXCL, avoiding a close/reopen pathname race and making the
@@ -370,7 +395,7 @@ def storage_open_blocker(db_path: Path | None = None) -> str | None:
     path = Path(db_path or DEFAULT_DB).expanduser().absolute()
     info = _lstat(path)
     if info is None:
-        return _new_storage_parent_finding(path.parent)
+        return f"database is missing: {path}"
     if stat.S_ISLNK(info.st_mode):
         return f"database is a symbolic link: {path}"
     if not stat.S_ISREG(info.st_mode):
@@ -487,13 +512,14 @@ def storage_privacy_findings(db_path: Path | None = None) -> list[str]:
 def connect(db_path: Path | None = None) -> sqlite3.Connection:
     """Open (creating if needed) and migrate forward. Never migrates backward."""
     path = Path(db_path or DEFAULT_DB).expanduser().absolute()
-    blocker = storage_open_blocker(path)
-    if _lstat(path) is None:
+    initially_missing = _lstat(path) is None
+    if initially_missing:
+        blocker = _new_storage_parent_finding(path.parent)
         if blocker:
             raise JanusError(f"refusing unsafe new ledger path: {blocker}")
         _create_private_parents(path.parent)
         _create_private_database(path)
-        blocker = storage_open_blocker(path)
+    blocker = storage_open_blocker(path)
     if blocker:
         raise JanusError(f"refusing unsafe ledger path: {blocker}")
     try:

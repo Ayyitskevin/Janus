@@ -917,12 +917,6 @@ def main(argv: list[str] | None = None) -> int:
             return args.fn(args)
         if args.cmd == "doctor":
             try:
-                blocker = core.storage_open_blocker(args.db)
-            except JanusError as e:
-                blocker = str(e)
-            if blocker:
-                return args.fn(args, None, open_blocker=blocker)
-            try:
                 conn = core.connect(args.db)
             except JanusError as e:
                 return args.fn(args, None, open_blocker=str(e))
