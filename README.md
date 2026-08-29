@@ -132,6 +132,38 @@ schema](docs/spec/upgrade-preparation-v1.schema.json) and always records
 or authorize deployment. Full refusal and privacy semantics are in [ADR
 0004](docs/adr/0004-rehearsed-upgrades.md).
 
+### Preflight and apply that exact preparation
+
+The same clean candidate checkout can verify that a preparation is still
+deployable without changing installed code or logical ledger content:
+
+```bash
+python scripts/apply_upgrade.py preflight \
+  --bundle "$prepared_parent/bundle" \
+  --db "$HOME/.janus/janus.db" \
+  --install-root "$HOME/.local/share/janus" \
+  --active "$HOME/.local/share/janus/venv" \
+  --wrapper "$HOME/.local/bin/janus"
+```
+
+Preflight requires the exact clean commit that created the bundle, re-hashes
+both wheels and the backup, binds the currently installed rollback commit, and
+takes a new coherent SQLite snapshot. Any intervening Janus activity makes the
+bundle stale; prepare a new one instead of treating an old backup as authority.
+The Python environment running this repository script must include the declared
+test toolchain, and `lsof` is required for the mutating command.
+
+Actual rollout remains a human-reviewed maintenance operation. After reviewing
+the displayed identities and effects, the operator invokes the same command as
+`apply --yes`. `--yes` only confirms those displayed effects; authorization is
+external to Janus. The command stages exact candidate and rollback environments,
+enters a fail-closed maintenance state, proves the ledger is quiescent and still
+fresh, repairs legacy storage to `0700`/`0600`, runs the rehearsed migration,
+atomically activates the candidate, and writes a closed local receipt. It never
+restores the database backup automatically because doing so could discard later
+decisions. See [ADR 0005](docs/adr/0005-receipt-bound-rollout.md) and the
+[rollout-receipt v1 contract](docs/spec/rollout-receipt-v1.md).
+
 ## Why this exists
 
 A well-run agent fleet manufactures human-decision debt on purpose. The
@@ -228,6 +260,10 @@ python3 -m venv ~/.local/share/janus/venv
 
 and put a wrapper on `PATH` that execs that venv's `janus`. Publishing a change
 is then a deliberate act rather than a side effect of editing.
+
+For upgrades, use the prepared, receipt-bound flow above. A publisher that
+force-reinstalls whichever branch a mutable checkout happens to contain cannot
+prove installed identity, backup freshness, or rollback readiness.
 
 This is worth the extra step. An editable install (`pip install -e`) makes the
 checkout itself the program, so on a machine where several agents share one

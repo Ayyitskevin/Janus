@@ -46,6 +46,25 @@ therefore explain legacy `0775`/`0644`; those modes are recorded, never repaired
 or accepted as the normal ledger boundary. Same-OS-user and root replacement
 remain outside the stated threat model.
 
+Receipt-bound rollout is the mutating half of that exception. Its preparation
+bundle is untrusted local input, not an authorization token: the rollout script
+requires a closed schema, owner-controlled paths, exact file modes and hashes,
+one clean source commit, the installed rollback commit, and a newly coherent
+snapshot equal to the backup's migration history, counts, and canonical content
+digests. It repeats freshness after redirecting the active CLI to a fail-closed
+maintenance environment and uses `lsof` to refuse while another process still
+holds the database family open. Only then may it repair the family to
+`0700`/`0600` and run the exact rehearsed migration.
+
+`apply --yes` acknowledges displayed filesystem and database effects; it is not
+proof of authority, and the rollout never reads Janus to decide whether it may
+run. Candidate and rollback code are staged before maintenance, activation is
+an atomic pointer replacement, and a durable in-progress journal prevents a
+crash from being mistaken for success. Handled failures restore the prior code
+entry point and provenance. The coherent database backup is retained but never
+restored automatically, because that could delete legitimate decisions written
+after it was taken.
+
 This is inherited, not chosen, and it is why Janus must never enter the
 permission path. A system that treats a Janus read as sufficient grounds to act
 would be trusting a store that a same-OS-user process can rewrite.
