@@ -417,6 +417,98 @@ def test_export_postchecks_sqlite_coordination_sidecars(tmp_path: Path, monkeypa
     assert blocker_calls == 2
 
 
+def test_export_reuses_one_absolute_path_when_cwd_changes(tmp_path: Path, monkeypatch):
+    ledger_directory = tmp_path / "ledger"
+    ledger_directory.mkdir(mode=0o700)
+    db = ledger_directory / "janus.db"
+    conn = core.connect(db)
+    conn.close()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(ledger_directory)
+
+    checked_paths = []
+    real_blocker = core.storage_open_blocker
+
+    def recording_blocker(path):
+        checked_paths.append(path)
+        return real_blocker(path)
+
+    real_validated_migrations = stable_export._validated_migrations
+
+    def change_cwd_after_snapshot_opens(connection):
+        migrations = real_validated_migrations(connection)
+        os.chdir(elsewhere)
+        return migrations
+
+    monkeypatch.setattr(core, "storage_open_blocker", recording_blocker)
+    monkeypatch.setattr(
+        stable_export,
+        "_validated_migrations",
+        change_cwd_after_snapshot_opens,
+    )
+
+    stable_export.export_gates(Path("janus.db"))
+
+    assert checked_paths == [db, db]
+
+
+class _CloseFailureConnection:
+    def __init__(self, connection):
+        self._connection = connection
+
+    def __getattr__(self, name):
+        return getattr(self._connection, name)
+
+    def close(self):
+        self._connection.close()
+        raise sqlite3.OperationalError("injected close failure")
+
+
+def test_export_translates_close_failure_and_still_postchecks(
+    monkeypatch, populated_ledger
+):
+    db, _, _ = populated_ledger
+    real_connect = stable_export._connect_read_only
+    real_blocker = core.storage_open_blocker
+    blocker_calls = 0
+
+    def connect_with_close_failure(path):
+        return _CloseFailureConnection(real_connect(path))
+
+    def counting_blocker(path):
+        nonlocal blocker_calls
+        blocker_calls += 1
+        return real_blocker(path)
+
+    monkeypatch.setattr(stable_export, "_connect_read_only", connect_with_close_failure)
+    monkeypatch.setattr(core, "storage_open_blocker", counting_blocker)
+
+    with pytest.raises(
+        JanusError,
+        match="could not close the read-only SQLite snapshot: injected close failure",
+    ):
+        stable_export.export_gates(db)
+    assert blocker_calls == 2
+
+
+def test_export_close_failure_does_not_mask_primary_error(monkeypatch, populated_ledger):
+    db, _, _ = populated_ledger
+    real_connect = stable_export._connect_read_only
+
+    def connect_with_close_failure(path):
+        return _CloseFailureConnection(real_connect(path))
+
+    monkeypatch.setattr(stable_export, "_connect_read_only", connect_with_close_failure)
+
+    with pytest.raises(JanusError, match="no such gate") as raised:
+        stable_export.export_gates(db, "g00000000000")
+    assert raised.value.__notes__ == [
+        "SQLite snapshot cleanup also failed while closing the connection: "
+        "injected close failure"
+    ]
+
+
 def test_export_uses_the_same_storage_identity_boundary(tmp_path: Path):
     directory = tmp_path / "private"
     db = directory / "janus.db"
