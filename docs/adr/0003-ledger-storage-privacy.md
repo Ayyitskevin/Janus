@@ -55,6 +55,11 @@ Other identity hazards (symlinks, wrong types or owners, and extra hard links)
 are likewise refused before SQLite opens them. `doctor` prints those findings
 and skips checks that would require an unsafe open.
 
+The boundary is shared by ordinary writable commands and the stable export's
+separate read-only connector. Export still does not create or migrate a ledger;
+it inspects the unresolved absolute pathname, refuses the same identity hazards,
+and only then opens SQLite with `mode=ro`.
+
 ## Consequences
 
 - A new ledger remains private under every measured umask from `000` through

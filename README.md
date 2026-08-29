@@ -64,7 +64,7 @@ rollback-journal family for ownership, type, mode, symlink, and hard-link drift.
 It reports existing exposure and exits nonzero, but never silently changes
 permissions on live storage; unsafe identity paths are not opened. In
 particular, a writable non-sticky ledger directory must be repaired or
-relocated before ordinary commands resume.
+relocated before ordinary commands or stable export resume.
 
 Under its own heading the board also carries **PROMISED, NOT DELIVERED**: gates a
 human already approved whose `--delivery-check` has not yet succeeded. A ruling

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -373,6 +374,45 @@ def test_export_neither_creates_nor_migrates_a_ledger(tmp_path: Path):
         assert check.execute(
             "SELECT COUNT(*) FROM schema_migrations WHERE version = '0002_check_revisions'"
         ).fetchone()[0] == 0
+
+
+def test_export_uses_the_same_storage_identity_boundary(tmp_path: Path):
+    directory = tmp_path / "private"
+    db = directory / "janus.db"
+    conn = core.connect(db)
+    conn.close()
+    original = db.read_bytes()
+
+    directory.chmod(0o777)
+    with pytest.raises(JanusError, match="permits another OS user to replace"):
+        stable_export.export_gates(db)
+
+    directory.chmod(0o1777)
+    stable_export.export_gates(db)
+    directory.chmod(0o700)
+
+    db_link = tmp_path / "database-link.db"
+    db_link.symlink_to(db)
+    with pytest.raises(JanusError, match="database is a symbolic link"):
+        stable_export.export_gates(db_link)
+
+    directory_link = tmp_path / "directory-link"
+    directory_link.symlink_to(directory, target_is_directory=True)
+    with pytest.raises(JanusError, match="directory path contains a symbolic link"):
+        stable_export.export_gates(directory_link / db.name)
+
+    second_name = directory / "second-name.db"
+    os.link(db, second_name)
+    with pytest.raises(JanusError, match="database has 2 hard links"):
+        stable_export.export_gates(db)
+    second_name.unlink()
+
+    journal = Path(f"{db}-journal")
+    journal.mkdir()
+    with pytest.raises(JanusError, match="rollback journal is not a regular file"):
+        stable_export.export_gates(db)
+
+    assert db.read_bytes() == original
 
 
 def test_cli_export_bypasses_the_normal_writable_connector(
