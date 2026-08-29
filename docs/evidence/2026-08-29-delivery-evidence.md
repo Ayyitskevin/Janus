@@ -102,6 +102,11 @@ able until the delivery check is run again; CLI wording must state that limit.
 
 No schema or export-v1 change is justified by this evidence.
 
+The derived delivery status is also bound to the effective check command. A
+passing observation from a superseded command remains in append-only history
+but becomes ineligible as soon as `revise-check` changes what is being measured;
+the replacement must actually run before it can report delivery.
+
 ## Candidate replay against a live-ledger backup
 
 The implementation candidate was run against a SQLite backup of the same live

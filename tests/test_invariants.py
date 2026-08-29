@@ -1190,6 +1190,34 @@ def test_a_legacy_pre_ruling_delivery_observation_never_counts(conn):
     assert core.latest_delivery_observation(conn, g)["exit_code"] == 0
 
 
+def test_a_delivery_result_is_bound_to_the_effective_check(tmp_path):
+    """Correcting a bad check must not inherit the old check's success.
+
+    The observation remains in append-only history, but board and scorecard
+    status become unknown until the replacement command is actually run.
+    """
+    db = tmp_path / "revised-delivery.db"
+    conn = core.connect(db)
+    g = _gate(conn, delivery_check="true")
+    core.close_gate(conn, g, state="approved", reason="yes", actor="kevin")
+    core.observe(conn, g, "delivery", "tester")
+    assert core.latest_delivery_observation(conn, g)["exit_code"] == 0
+
+    core.revise_check(conn, g, "delivery", "false", "tester",
+                      "the old command did not measure the delivered effect")
+
+    assert core.latest_observation(conn, g, "delivery")["exit_code"] == 0, \
+        "the old fact must remain in history"
+    assert core.latest_delivery_observation(conn, g) is None
+    board = _board(db)
+    assert g in board and "unchecked" in board
+    acted = json.loads(_stats(db, "--json"))["consumer_acted"]
+    assert acted["measurable"] == 1 and acted["confirmed"] == 0, acted
+
+    core.observe(conn, g, "delivery", "tester")
+    assert core.latest_delivery_observation(conn, g)["exit_code"] == 1
+
+
 def test_an_approved_promise_that_has_not_landed_gets_its_own_heading(tmp_path):
     """ADR 0001: an approved resource gate is a promise, not a delivery.
 
