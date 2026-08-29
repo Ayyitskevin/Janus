@@ -2,7 +2,8 @@
 
 - Status: Proposed
 - Date: 2026-08-23
-- Amended: 2026-08-24 (open questions resolved against a real corpus)
+- Amended: 2026-08-24 (open questions resolved against a real corpus);
+  2026-08-29 (delivery evidence generalized after live-ledger measurement)
 
 ## Context
 
@@ -231,7 +232,7 @@ path harder than the careless one gets the careless one.
 raiser nor the ruler, which is exactly why it carries the strictest attribution
 and the loosest binding.
 
-### A resource gate needs a delivery check, not a new state
+### A consumer effect needs a delivery check, not a new state
 
 The corpus case is live and still unresolved as this is written. Gate #2 asked
 the operator to mint a credential. The operator agreed — and the file still does
@@ -249,15 +250,31 @@ Rejected: treating it as the consumer's business. Today proves it is not. The
 consumer had no way to signal that an approved gate had not landed.
 
 Resolved: a gate may carry an optional `delivery.check` — a command whose exit
-status reports whether the promised thing now exists. The ruling still closes
-the decision, so the invariant holds: state stays single-valued and terminal
-states stay terminal. The **board** surfaces approved resource gates whose
-delivery check still fails, under their own heading.
+status reports whether the promised consumer effect now exists. The resource
+case forced the field, but the distinction is not resource-specific: approved
+authority edits can also fail to land. The ruling still closes the decision, so
+the invariant holds: state stays single-valued and terminal states stay
+terminal. The **board** surfaces approved gates whose delivery check still
+fails, under their own heading, and counts approved gates with no check as
+unmeasured.
 
 Delivery is simply decay pointed the other way. Decay asks what worsens while a
 gate waits; delivery asks whether a promise has landed. Both are on-demand
 observations that never change state, so this adds a field and a board section,
 not a concept.
+
+The 2026-08-29 live-ledger sweep measured all 21 approved gates: 18 were bound,
+2 had drifted, and only 2 carried delivery checks. A third check belonged to a
+superseded gate and incorrectly inflated the scorecard's old all-state proxy.
+The evidence and re-runnable queries are in
+`docs/evidence/2026-08-29-delivery-evidence.md`.
+
+A delivery observation is valid only after approval. It is attributed evidence
+that the stored command reported success or failure at one moment; it is not a
+postimage receipt, does not prove causality, and grants no authority. Binding
+and delivery are therefore rendered as separate dimensions. A historical pass
+must be run again to detect a later regression unless the command itself checks
+an exact expected result.
 
 Today's gate #2 would read: `approved`, with
 `delivery.check: test -f ~/.claude/athena.env`, and the board would show it as

@@ -176,9 +176,23 @@ def verify_binding(kind: str, locator: str, expected: str) -> tuple[bool | None,
         return True, "binding matches: the bound bytes are the live bytes"
     return False, (
         "BINDING NO LONGER MATCHES — the artifact changed since it was bound. "
-        "A ruling approves specific bytes; it does not follow them. Treat any "
-        "ruling on this gate as void and raise a new gate."
+        "The binding still identifies the earlier bytes; it does not follow "
+        "later changes."
     )
+
+
+def binding_basis(gate: dict) -> tuple[str | None, str]:
+    """Return the digest current applicability is compared with, and its basis.
+
+    An open gate names the bytes present when it was raised.  A ruled gate names
+    the bytes present when the human actually ruled, which may be different.
+    Confusing those two makes a legitimate pre-ruling edit look like post-ruling
+    drift and is especially misleading once delivery evidence exists.
+    """
+    ruling = gate.get("ruling")
+    if ruling and ruling["state"] in RULED_STATES and ruling["bound_sha256"]:
+        return ruling["bound_sha256"], "ruling"
+    return gate.get("binding_sha256"), "raise"
 
 
 # ------------------------------------------------------------ database ----
@@ -831,6 +845,40 @@ def latest_observation(conn: sqlite3.Connection, gate_id: str, kind: str) -> dic
     return dict(row) if row else None
 
 
+def latest_delivery_observation(conn: sqlite3.Connection, gate_id: str) -> dict | None:
+    """Return the latest delivery result eligible to explain an approved action.
+
+    Delivery is post-ruling evidence.  Older Janus versions allowed a delivery
+    command to run while a gate was still open; letting that result survive a
+    later approval would make the future appear to have been observed early.
+
+    Timestamps have second resolution and wall clocks can move, so ordering is
+    taken from the append-only audit trail written in the same transactions. If
+    that ordering evidence is absent, the conservative result is unknown.
+    """
+    ruling = conn.execute(
+        "SELECT state, ruled_at FROM rulings WHERE gate_id = ?", (gate_id,)
+    ).fetchone()
+    if ruling is None or ruling["state"] != "approved":
+        return None
+    observation = latest_observation(conn, gate_id, "delivery")
+    if observation is None:
+        return None
+
+    approved_audit = conn.execute(
+        "SELECT id FROM audit_events WHERE gate_id = ? AND verb = 'approved'"
+        " ORDER BY id DESC LIMIT 1", (gate_id,)
+    ).fetchone()
+    observed_audit = conn.execute(
+        "SELECT id FROM audit_events WHERE gate_id = ? AND verb = 'observe:delivery'"
+        " ORDER BY id DESC LIMIT 1", (gate_id,)
+    ).fetchone()
+    if (approved_audit is None or observed_audit is None
+            or observed_audit["id"] <= approved_audit["id"]):
+        return None
+    return observation
+
+
 def list_gates(conn: sqlite3.Connection, *, state: str = "open") -> list[dict]:
     if state == "all":
         rows = conn.execute("SELECT id FROM gates ORDER BY raised_at").fetchall()
@@ -899,9 +947,16 @@ TIMEOUT_EXIT = 124
 def observe(conn: sqlite3.Connection, gate_id: str, kind: str, actor: str,
             timeout: int = 120, *, expected_command: str | None = None) -> dict:
     """Run a decay or delivery check. An observation NEVER changes state."""
+    if kind not in ("decay", "delivery"):
+        raise JanusError("kind must be 'decay' or 'delivery'")
     gate = get_gate(conn, gate_id)
     if gate is None:
         raise JanusError(f"no such gate: {gate_id}")
+    if kind == "delivery" and gate["state"] != "approved":
+        raise JanusError(
+            "a delivery check is post-action evidence and can run only after "
+            f"an approved ruling; gate {gate_id} is {gate['state']}. Nothing ran."
+        )
     cmd = gate["effective_decay_check"] if kind == "decay" else gate["effective_delivery_check"]
     if not cmd:
         raise JanusError(f"gate {gate_id} carries no {kind} check")

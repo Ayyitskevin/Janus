@@ -40,10 +40,16 @@ that a human ruled is not granting.
    never an edit.
 2. **A ruling binds bytes, not names.** Every decision carries the SHA-256 of
    the artifact it applies to. If the digest changes, the ruling does not
-   follow. Janus records the binding; the consumer enforces it.
+   follow. The ruling remains historical evidence about its recorded bytes; it
+   does not become authority for the new ones. Janus records the binding; the
+   consumer enforces it.
 3. **Reading a ruling is not authority.** A consumer that acts on an approval
    must independently re-verify the binding and its own preconditions. Janus is
    never in the permission path.
+
+Delivery is separate evidence about what happened after approval. A successful
+check may support the account that the promised effect landed, but it never
+changes the ruling, proves causality, or makes the live artifact authorized.
 
 A fourth rule is operational rather than architectural, but it is why the
 project exists: **a gate that nobody can act on is a bug in the gate, not in the

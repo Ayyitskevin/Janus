@@ -73,10 +73,10 @@ export resume.
 
 Under its own heading the board also carries **PROMISED, NOT DELIVERED**: gates a
 human already approved whose `--delivery-check` has not yet succeeded. A ruling
-closes a *decision*; it does not make a credential exist. Those gates have left
-the decision queue while the thing they promised may never have arrived, and
-nothing else was watching that gap. A promise drops off the moment its own check
-passes.
+closes a *decision*; it does not make a credential, edit, or other consumer
+effect exist. Approved gates without a delivery check are counted as unmeasured
+rather than silently treated as acted on. A promise drops off the moment its own
+check passes.
 
 Four fields are mandatory and the schema refuses a gate without them. Bind the
 bytes with `--bind-kind file|git|text --bind <locator>`; offer alternatives with
@@ -136,15 +136,23 @@ One decision, raised by one agent, that only a human can make.
 | `decay` | What becomes untrue or more expensive while this waits — with a re-runnable check |
 | `consumer` | Who acts on the answer, and what they will do |
 | `options` | Optional named alternatives; empty means approve/refuse. Six of twelve real gates needed these |
-| `delivery` | Optional check that a promised thing actually landed — for `resource` gates, an approval is a promise, not a delivery |
+| `delivery` | Optional post-approval check that the promised consumer effect actually landed |
 | `state` | `open` · `approved` · `refused` · `expired` · `withdrawn` · `superseded` |
 
 Two fields carry most of the weight.
 
 **`binding` is a digest, not a reference.** A ruling approves specific bytes. If
-those bytes change, the ruling does not follow them — it is void, not "probably
-still fine." This is the one lesson the fleet has already paid for: an approval
-that names an artifact loosely can be replayed against a different artifact.
+those bytes change, the ruling does not follow them: it remains historical
+evidence about the recorded bytes and does not apply to the new ones. This is the
+one lesson the fleet has already paid for: an approval that names an artifact
+loosely can be replayed against a different artifact.
+
+**`delivery` is evidence on a second axis.** A post-ruling check may report that
+the approved effect landed. It does not mutate the ruling, prove causality, name
+the post-action bytes unless its stored command explicitly checks them, or grant
+authority. Janus therefore reports binding and delivery separately. Delivery
+checks cannot run before approval, and a historical pass must be run again to
+detect a later regression.
 
 **`superseded` is a first-class outcome.** Measured across one real session,
 the most common way a gate ends is not a ruling and not expiry — it is the world
