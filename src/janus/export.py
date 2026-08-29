@@ -86,8 +86,7 @@ def _sha256(value: Any) -> str:
     return hashlib.sha256(canonical_json(value)).hexdigest()
 
 
-def _connect_read_only(db_path: Path | None) -> sqlite3.Connection:
-    path = core.storage_path(db_path)
+def _connect_read_only(path: Path) -> sqlite3.Connection:
     try:
         path.lstat()
     except FileNotFoundError:
@@ -291,7 +290,12 @@ def _record(
 
 def export_gates(db_path: Path | None = None, gate_id: str | None = None) -> bytes:
     """Export gates without changing logical content or creating the main DB."""
-    conn = _connect_read_only(db_path)
+    # Capture the absolute lexical identity once. A caller can change the
+    # process CWD while the snapshot is open; both boundary checks must still
+    # name the same ledger family.
+    path = core.storage_path(db_path)
+    conn = _connect_read_only(path)
+    primary_error: BaseException | None = None
     try:
         conn.execute("BEGIN")
         migrations = _validated_migrations(conn)
@@ -365,17 +369,47 @@ def export_gates(db_path: Path | None = None, gate_id: str | None = None) -> byt
         }
         result = canonical_json(envelope)
     except sqlite3.Error as exc:
-        raise JanusError(f"cannot export this ledger: {exc}") from exc
-    finally:
+        primary_error = JanusError(f"cannot export this ledger: {exc}")
+        primary_error.__cause__ = exc
+    except BaseException as exc:
+        primary_error = exc
+
+    try:
         conn.close()
+    except sqlite3.Error as exc:
+        if primary_error is None:
+            primary_error = JanusError(
+                f"cannot export: could not close the read-only SQLite snapshot: {exc}"
+            )
+            primary_error.__cause__ = exc
+        else:
+            primary_error.add_note(
+                f"SQLite snapshot cleanup also failed while closing the connection: {exc}"
+            )
+
     # WAL readers may create -wal/-shm coordination files even in mode=ro.
     # Re-check after close so the documented physical side effect cannot weaken
     # the same exact storage boundary that admitted the snapshot.
-    blocker = core.storage_open_blocker(db_path)
+    try:
+        blocker = core.storage_open_blocker(path)
+    except JanusError as exc:
+        if primary_error is None:
+            primary_error = exc
+        else:
+            primary_error.add_note(
+                f"Post-export storage inspection also failed: {exc}"
+            )
+        blocker = None
     if blocker:
-        raise JanusError(
+        boundary_error = JanusError(
             f"cannot export: SQLite coordination storage became unsafe: {blocker}"
         )
+        if primary_error is None:
+            primary_error = boundary_error
+        else:
+            primary_error.add_note(str(boundary_error))
+    if primary_error is not None:
+        raise primary_error
     return result
 
 
