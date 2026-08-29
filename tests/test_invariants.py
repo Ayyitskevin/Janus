@@ -630,6 +630,45 @@ def test_ruling_records_the_digest_observed_at_ruling_time(conn, tmp_path):
     assert gate["ruling"]["bound_sha256"] == core.digest_file(art)
 
 
+@pytest.mark.parametrize("state", core.RULED_STATES)
+def test_a_bound_gate_cannot_be_ruled_on_when_its_bytes_cannot_be_read(
+        conn, tmp_path, state):
+    """Record validation is not downstream authorization.
+
+    An approval or refusal on a bound gate must carry the bytes observed at
+    ruling time. If those bytes cannot be read, persisting NULL would create a
+    terminal record nobody can ever re-check.
+    """
+    art = tmp_path / "gone-at-ruling.txt"
+    art.write_text("reviewed bytes")
+    g = _gate(conn, binding=core.resolve_binding("file", str(art)))
+    art.unlink()
+
+    with pytest.raises(JanusError, match=f"cannot record {state}"):
+        core.close_gate(conn, g, state=state, reason="rule anyway", actor="kevin")
+
+    gate = core.get_gate(conn, g)
+    assert gate["state"] == "open"
+    assert gate["ruling"] is None
+
+
+def test_the_database_refuses_a_digestless_ruling_on_a_bound_gate(conn, tmp_path):
+    """The invariant must hold even when a caller bypasses Python."""
+    art = tmp_path / "bound.txt"
+    art.write_text("reviewed bytes")
+    g = _gate(conn, binding=core.resolve_binding("file", str(art)))
+
+    with pytest.raises(sqlite3.IntegrityError, match="bound ruling must record"):
+        conn.execute(
+            "INSERT INTO rulings "
+            "(gate_id, state, ruled_at, ruled_by, reason, bound_sha256) "
+            "VALUES (?,?,?,?,?,?)",
+            (g, "approved", core.now(), "kevin", "rule anyway", None),
+        )
+    conn.rollback()
+    assert core.get_gate(conn, g)["state"] == "open"
+
+
 # --------------------- invariant 3: reading is not authority ----------------
 def test_janus_exposes_no_authorization_verb():
     """Guard against a future 'is_authorized' creeping in.
@@ -1873,15 +1912,9 @@ def test_doctor_reports_a_binding_it_cannot_verify(tmp_path):
     assert f"unverifiable {clean}" not in r.stdout, r.stdout
 
 
-def test_ruling_on_an_unverifiable_binding_warns_that_it_binds_nothing(tmp_path):
-    """Drift refused without --yes; "cannot verify" said nothing whatsoever.
-
-    That is the more dangerous half, because `digest_of_live` swallows the read
-    error and returns None, so the ruling is written with bound_sha256 = NULL.
-    Invariant 2 is that a ruling binds a digest and not a name — a ruling that
-    binds NOTHING is one nobody can ever re-check. Janus states it and still
-    writes: enforcing would put Janus in the permission path (ADR 0001).
-    """
+@pytest.mark.parametrize("decision", ("--approve", "--refuse"))
+def test_ruling_on_an_unverifiable_binding_is_refused(tmp_path, decision):
+    """A missing artifact cannot produce a re-checkable bound ruling."""
     db = tmp_path / "d.db"
     conn = core.connect(db)
     art = tmp_path / "gone.md"
@@ -1891,16 +1924,17 @@ def test_ruling_on_an_unverifiable_binding_warns_that_it_binds_nothing(tmp_path)
     conn.commit()
     art.unlink()
 
-    r = _cli(db, "decide", g, "--approve", "--reason", "ruling anyway")
-    assert r.returncode == 0, r.stderr
+    r = _cli(db, "decide", g, decision, "--reason", "ruling anyway")
+    assert r.returncode != 0, r.stdout
     assert "CANNOT VERIFY" in r.stderr, r.stderr
-    assert "NO bytes" in r.stderr, r.stderr
-    # the ruling really did land, and really did bind nothing
-    assert core.get_gate(core.connect(db), g)["ruling"]["bound_sha256"] is None
+    assert "A ruling must record the bytes ruled on" in r.stderr, r.stderr
+    gate = core.get_gate(core.connect(db), g)
+    assert gate["state"] == "open"
+    assert gate["ruling"] is None
 
 
 def test_show_says_when_a_ruling_bound_nothing(tmp_path):
-    """`show` printed the "ruled on bytes @" line only when a digest existed.
+    """Legacy invalid rows stay visible after new invalid writes are refused.
 
     So a ruling that bound nothing rendered identically to one on a gate that
     never had a binding at all — absent reading as fine, one layer further on.
@@ -1912,7 +1946,16 @@ def test_show_says_when_a_ruling_bound_nothing(tmp_path):
     g = _gate(conn, question="ruled while unreadable",
               binding=core.resolve_binding("file", str(art)))
     art.unlink()
-    core.close_gate(conn, g, state="approved", reason="ruled anyway", actor="kevin")
+    # Simulate a row written before migration 0003 installed the database-level
+    # guard. Append-only keeps such history; the reader must state it plainly.
+    conn.execute("DROP TRIGGER ruling_bound_gate_requires_digest")
+    conn.execute(
+        "INSERT INTO rulings "
+        "(gate_id, state, ruled_at, ruled_by, reason, bound_sha256) "
+        "VALUES (?,?,?,?,?,?)",
+        (g, "approved", core.now(), "kevin", "legacy ruling", None),
+    )
+    conn.commit()
 
     out = _cli(db, "show", g).stdout
     assert "NONE RECORDED" in out, out
