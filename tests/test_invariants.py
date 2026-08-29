@@ -94,7 +94,10 @@ def test_storage_privacy_reports_broad_modes_symlinks_and_hardlinks(tmp_path):
 
     link = tmp_path / "ledger-link.db"
     link.symlink_to(db)
-    assert any("database is a symbolic link" in item for item in core.storage_privacy_findings(link))
+    assert any(
+        "database is a symbolic link" in item
+        for item in core.storage_privacy_findings(link)
+    )
     with pytest.raises(JanusError, match="database is a symbolic link"):
         core.connect(link)
     conn.close()
