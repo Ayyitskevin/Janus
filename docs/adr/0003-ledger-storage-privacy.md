@@ -26,6 +26,18 @@ a close/reopen chmod race, and explicit modes make the result independent of a
 permissive or over-restrictive umask. SQLite's database family consequently
 inherits the owner-only file mode.
 
+Creation is admitted only through a symlink-free directory chain whose entries
+are owned by the process user or root and cannot be replaced by another OS user.
+Sticky directories such as `/tmp` are accepted only when their protected child
+has an expected owner. An existing containing directory must already be owned by
+the process user at exactly `0700`; Janus refuses rather than chmodding it. The
+new file is re-identified after descriptor hardening, and a failed hardening
+attempt removes only the exact inode Janus created.
+
+This boundary deliberately requires POSIX owner and mode semantics. On a
+platform without them Janus refuses with an operator-facing error rather than
+claiming an equivalent privacy guarantee it cannot prove.
+
 `janus doctor` inspects the exact active family: containing directory, database,
 `-wal`, `-shm`, and `-journal` when present. It fails on a wrong owner, wrong
 type, mode other than `0700`/`0600`, a symlink, or more than one hard link to a
@@ -35,6 +47,10 @@ Inspection never repairs. Existing directories and files are not chmodded by an
 ordinary open or by `doctor`; the output says so and exits nonzero. A human can
 then choose the maintenance window, backup, and exact permission change. This
 keeps feedback in Janus without turning a diagnostic into a hidden migration.
+Broad modes on an existing, regular, single-link, correctly owned database stay
+compatible; identity hazards (symlinks, wrong types or owners, and extra hard
+links) are refused before SQLite opens them. `doctor` prints those findings and
+skips checks that would require an unsafe open.
 
 ## Consequences
 
@@ -42,9 +58,10 @@ keeps feedback in Janus without turning a diagnostic into a hidden migration.
   `777`, including its live WAL and shared-memory files.
 - Existing broad storage becomes loud but keeps working, preserving adoption
   while the owner schedules deliberate repair.
-- Alternate locations no longer inherit unsafe creation defaults silently.
-- Symlink and hard-link aliases remain possible for existing storage but are
-  visible failures rather than accepted as owner-only evidence.
+- Alternate locations no longer inherit unsafe creation defaults or
+  replaceable parent paths silently.
+- Database-family symlinks, wrong types/owners, and hard-link aliases are
+  visible failures and are refused before SQLite opens them.
 - This change writes no schema migration and does not alter gates, rulings,
   observations, audit semantics, stable export, or execution authority.
 
@@ -68,6 +85,13 @@ keeps feedback in Janus without turning a diagnostic into a hidden migration.
   supplied mode: https://docs.python.org/3.11/library/pathlib.html#pathlib.Path.mkdir
 - Python 3.11 `os.open` documents exclusive creation and umask-masked modes:
   https://docs.python.org/3.11/library/os.html#os.open
+- Linux `open(2)` documents that `O_CREAT|O_EXCL` refuses symbolic links:
+  https://man7.org/linux/man-pages/man2/open.2.html
+- GNU/Linux `chmod(1)` documents sticky-directory rename protection:
+  https://man7.org/linux/man-pages/man1/chmod.1.html
+- Linux `path_resolution(7)` documents component lookup and directory
+  permission semantics:
+  https://man7.org/linux/man-pages/man7/path_resolution.7.html
 - SQLite documents that WAL and journal files are part of the database family:
   https://sqlite.org/howtocorrupt.html#_deleting_a_hot_journal
 - Measured cases and commands: `docs/evidence/2026-08-29-ledger-permissions.md`.

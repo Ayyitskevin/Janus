@@ -88,11 +88,101 @@ def test_storage_privacy_reports_broad_modes_symlinks_and_hardlinks(tmp_path):
     assert "database has 2 hard links" in joined
     assert "WAL mode 0644" in joined
     assert "shared memory mode 0644" in joined
+    with pytest.raises(JanusError, match="database has 2 hard links"):
+        core.connect(db)
 
     link = tmp_path / "ledger-link.db"
     link.symlink_to(db)
     assert any("database is a symbolic link" in item for item in core.storage_privacy_findings(link))
+    with pytest.raises(JanusError, match="database is a symbolic link"):
+        core.connect(link)
     conn.close()
+
+
+def test_storage_privacy_reports_missing_owner_type_and_rollback_journal(
+    tmp_path, monkeypatch
+):
+    missing = tmp_path / "missing" / "janus.db"
+    missing_findings = "\n".join(core.storage_privacy_findings(missing))
+    assert "directory is missing" in missing_findings
+    assert "database is missing" in missing_findings
+
+    db = tmp_path / "private" / "janus.db"
+    conn = core.connect(db)
+    conn.close()
+    journal = Path(f"{db}-journal")
+    journal.touch(mode=0o600)
+    journal.chmod(0o644)
+    actual_uid = os.geteuid()
+    monkeypatch.setattr(core.os, "geteuid", lambda: actual_uid + 1)
+    findings = "\n".join(core.storage_privacy_findings(db))
+    assert "directory owner uid" in findings
+    assert "database owner uid" in findings
+    assert "rollback journal owner uid" in findings
+    assert "rollback journal mode 0644" in findings
+
+    monkeypatch.undo()
+    db.unlink()
+    db.mkdir()
+    assert any(
+        "database is not a regular file" in item
+        for item in core.storage_privacy_findings(db)
+    )
+
+
+@pytest.mark.parametrize("mask", [0o000, 0o777])
+def test_dangling_database_symlink_never_creates_its_target(tmp_path, mask):
+    directory = tmp_path / "private"
+    directory.mkdir(mode=0o700)
+    target = tmp_path / "target.db"
+    link = directory / "janus.db"
+    link.symlink_to(target)
+    previous = os.umask(mask)
+    try:
+        with pytest.raises(JanusError, match="database is a symbolic link"):
+            core.connect(link)
+    finally:
+        os.umask(previous)
+    assert not target.exists()
+
+
+def test_new_ledger_refuses_replaceable_existing_directory(tmp_path):
+    broad = tmp_path / "broad"
+    broad.mkdir(mode=0o700)
+    broad.chmod(0o777)
+    with pytest.raises(JanusError, match="requires directory mode 0700"):
+        core.connect(broad / "janus.db")
+
+    outer = tmp_path / "outer"
+    outer.mkdir(mode=0o700)
+    private = outer / "private"
+    private.mkdir(mode=0o700)
+    outer.chmod(0o777)
+    with pytest.raises(JanusError, match="permits another OS user to replace"):
+        core.connect(private / "janus.db")
+
+
+def test_new_ledger_refuses_symbolic_link_in_directory_chain(tmp_path):
+    target = tmp_path / "target"
+    target.mkdir(mode=0o700)
+    link = tmp_path / "alias"
+    link.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(JanusError, match="directory path contains a symbolic link"):
+        core.connect(link / "janus.db")
+    assert not (target / "janus.db").exists()
+
+
+def test_failed_permission_application_removes_the_exact_new_file(tmp_path, monkeypatch):
+    db = tmp_path / "private" / "janus.db"
+
+    def refuse_fchmod(descriptor, mode):
+        raise PermissionError("test refusal")
+
+    monkeypatch.setattr(core.os, "fchmod", refuse_fchmod)
+    with pytest.raises(JanusError, match="cannot secure new ledger"):
+        core.connect(db)
+    assert not db.exists()
 
 
 def test_doctor_fails_loudly_without_repairing_existing_broad_modes(tmp_path):
@@ -122,6 +212,32 @@ def test_doctor_accepts_a_private_ledger_family(tmp_path):
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "storage     private" in result.stdout
+
+
+def test_doctor_reports_wrong_type_before_opening_sqlite(tmp_path):
+    directory = tmp_path / "private"
+    directory.mkdir(mode=0o700)
+    db = directory / "janus.db"
+    db.mkdir()
+
+    result = _cli(db, "doctor")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "database is not a regular file" in result.stdout
+    assert "checks skipped" in result.stdout
+    assert "Traceback" not in result.stderr
+
+    db.rmdir()
+    conn = core.connect(db)
+    conn.close()
+    journal = Path(f"{db}-journal")
+    journal.mkdir()
+
+    sidecar_result = _cli(db, "doctor")
+
+    assert sidecar_result.returncode == 1
+    assert "rollback journal is not a regular file" in sidecar_result.stdout
+    assert "checks skipped" in sidecar_result.stdout
 
 
 # ------------------------- invariant 1: open or closed, never both ----------

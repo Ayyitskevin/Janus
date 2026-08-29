@@ -174,6 +174,95 @@ def _checksum(sql: str) -> str:
     return hashlib.sha256(sql.encode()).hexdigest()
 
 
+def _lstat(path: Path) -> os.stat_result | None:
+    try:
+        return path.lstat()
+    except FileNotFoundError:
+        return None
+
+
+def _effective_uid() -> int:
+    try:
+        return os.geteuid()
+    except AttributeError as exc:
+        raise JanusError(
+            "ledger privacy requires POSIX ownership and mode semantics"
+        ) from exc
+
+
+def _directory_chain_finding(
+    leaf: Path, *, private_leaf: bool, prospective_child: bool = False
+) -> str | None:
+    """Explain why another OS user could replace an entry in ``leaf``'s path."""
+    entries: list[tuple[Path, os.stat_result]] = []
+    cursor = leaf
+    while True:
+        info = _lstat(cursor)
+        if info is None:
+            return f"directory does not exist: {cursor}"
+        if stat.S_ISLNK(info.st_mode):
+            return f"directory path contains a symbolic link: {cursor}"
+        if not stat.S_ISDIR(info.st_mode):
+            return f"directory path contains a non-directory: {cursor}"
+        entries.append((cursor, info))
+        if cursor == cursor.parent:
+            break
+        cursor = cursor.parent
+
+    expected_uid = _effective_uid()
+    for target, info in entries:
+        if info.st_uid not in {0, expected_uid}:
+            return (
+                f"directory owner uid {info.st_uid} is neither root nor process uid "
+                f"{expected_uid}: {target}"
+            )
+
+    leaf_mode = stat.S_IMODE(entries[0][1].st_mode)
+    if private_leaf:
+        if entries[0][1].st_uid != expected_uid:
+            return f"ledger directory is not owned by process uid {expected_uid}: {leaf}"
+        if leaf_mode != PRIVATE_DIRECTORY_MODE:
+            return (
+                f"new ledger requires directory mode 0700, found {leaf_mode:04o}: {leaf}"
+            )
+
+    # A writable parent controls the name of its child. Sticky directories such
+    # as /tmp are the exception: another unprivileged user cannot replace a
+    # child owned by this user (or root). This turns the pathname reopen between
+    # os.open and SQLite into a same-user/root race, both inside the threat model.
+    if prospective_child and (leaf_mode & 0o022) and not (leaf_mode & stat.S_ISVTX):
+        return f"directory permits another OS user to replace a new child: {leaf}"
+    for (child, child_info), (parent, parent_info) in zip(entries, entries[1:]):
+        parent_mode = stat.S_IMODE(parent_info.st_mode)
+        if not (parent_mode & 0o022):
+            continue
+        if parent_mode & stat.S_ISVTX and child_info.st_uid in {0, expected_uid}:
+            continue
+        return f"directory permits another OS user to replace {child.name}: {parent}"
+    return None
+
+
+def _missing_parents(parent: Path) -> tuple[list[Path], Path]:
+    missing: list[Path] = []
+    cursor = parent
+    while _lstat(cursor) is None:
+        missing.append(cursor)
+        if cursor == cursor.parent:
+            break
+        cursor = cursor.parent
+    return missing, cursor
+
+
+def _new_storage_parent_finding(parent: Path) -> str | None:
+    missing, anchor = _missing_parents(parent)
+    finding = _directory_chain_finding(
+        anchor,
+        private_leaf=not missing,
+        prospective_child=bool(missing),
+    )
+    return finding
+
+
 def _create_private_parents(parent: Path) -> None:
     """Create every missing parent privately without changing existing paths.
 
@@ -182,41 +271,139 @@ def _create_private_parents(parent: Path) -> None:
     the caller has a permissive umask.
     Source: https://docs.python.org/3.11/library/pathlib.html#pathlib.Path.mkdir
     """
-    missing: list[Path] = []
-    cursor = parent
-    while not cursor.exists():
-        missing.append(cursor)
-        if cursor == cursor.parent:
-            break
-        cursor = cursor.parent
+    missing, _ = _missing_parents(parent)
+    finding = _new_storage_parent_finding(parent)
+    if finding:
+        raise JanusError(f"cannot create a private ledger: {finding}")
     for directory in reversed(missing):
         try:
             directory.mkdir(mode=PRIVATE_DIRECTORY_MODE)
         except FileExistsError:
-            if not directory.is_dir():
-                raise
+            info = _lstat(directory)
+            if (
+                info is None
+                or not stat.S_ISDIR(info.st_mode)
+                or stat.S_ISLNK(info.st_mode)
+                or info.st_uid != _effective_uid()
+                or stat.S_IMODE(info.st_mode) != PRIVATE_DIRECTORY_MODE
+            ):
+                raise JanusError(
+                    f"cannot create a private ledger: unsafe directory appeared: {directory}"
+                )
             continue
         # mkdir combines mode with umask. Widen only the directory this process
         # just created to the exact owner-only contract; existing paths are never
         # repaired as a side effect of opening Janus.
         directory.chmod(PRIVATE_DIRECTORY_MODE)
+    finding = _directory_chain_finding(parent, private_leaf=True)
+    if finding:
+        raise JanusError(f"cannot create a private ledger: {finding}")
+
+
+def _unlink_created_file(path: Path, created: os.stat_result) -> bool:
+    """Remove only the directory entry that still names our exact new inode."""
+    current = _lstat(path)
+    if current is None:
+        return True
+    if (
+        not stat.S_ISREG(current.st_mode)
+        or current.st_dev != created.st_dev
+        or current.st_ino != created.st_ino
+        or current.st_nlink != 1
+    ):
+        return False
+    try:
+        path.unlink()
+    except OSError:
+        return False
+    return True
 
 
 def _create_private_database(path: Path) -> None:
     """Reserve a new ledger as owner-only before SQLite can create it broadly."""
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     try:
-        descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, PRIVATE_FILE_MODE)
-    except FileExistsError:
-        return
+        descriptor = os.open(path, flags, PRIVATE_FILE_MODE)
+    except FileExistsError as exc:
+        raise JanusError(
+            f"database path appeared during private creation; inspect and retry: {path}"
+        ) from exc
+    created = os.fstat(descriptor)
     try:
         # os.open applies umask to its mode. fchmod operates on the descriptor
         # that won O_EXCL, avoiding a close/reopen pathname race and making the
         # new file exactly 0600 even under an over-restrictive ambient umask.
         # Sources: https://docs.python.org/3.11/library/os.html#os.open
         #          https://docs.python.org/3.11/library/os.html#os.fchmod
-        os.fchmod(descriptor, PRIVATE_FILE_MODE)
+        try:
+            os.fchmod(descriptor, PRIVATE_FILE_MODE)
+        except (AttributeError, OSError) as exc:
+            os.close(descriptor)
+            descriptor = -1
+            removed = _unlink_created_file(path, created)
+            suffix = "" if removed else "; the created entry could not be safely removed"
+            raise JanusError(f"cannot secure new ledger {path}{suffix}") from exc
     finally:
-        os.close(descriptor)
+        if descriptor >= 0:
+            os.close(descriptor)
+
+    current = _lstat(path)
+    if (
+        current is None
+        or not stat.S_ISREG(current.st_mode)
+        or current.st_dev != created.st_dev
+        or current.st_ino != created.st_ino
+        or current.st_uid != _effective_uid()
+        or current.st_nlink != 1
+        or stat.S_IMODE(current.st_mode) != PRIVATE_FILE_MODE
+    ):
+        removed = _unlink_created_file(path, created)
+        suffix = "" if removed else "; the created entry could not be safely removed"
+        raise JanusError(f"new ledger failed its identity check: {path}{suffix}")
+
+
+def storage_open_blocker(db_path: Path | None = None) -> str | None:
+    """Return a path-identity reason SQLite must not open, without repairing it."""
+    path = Path(db_path or DEFAULT_DB).expanduser().absolute()
+    info = _lstat(path)
+    if info is None:
+        return _new_storage_parent_finding(path.parent)
+    if stat.S_ISLNK(info.st_mode):
+        return f"database is a symbolic link: {path}"
+    if not stat.S_ISREG(info.st_mode):
+        return f"database is not a regular file: {path}"
+    expected_uid = _effective_uid()
+    if info.st_uid != expected_uid:
+        return (
+            f"database owner uid {info.st_uid} does not match process uid "
+            f"{expected_uid}: {path}"
+        )
+    if info.st_nlink != 1:
+        return f"database has {info.st_nlink} hard links (expected 1): {path}"
+    chain_finding = _directory_chain_finding(path.parent, private_leaf=False)
+    if chain_finding:
+        return chain_finding
+    for suffix, label in (
+        ("-wal", "WAL"),
+        ("-shm", "shared memory"),
+        ("-journal", "rollback journal"),
+    ):
+        sidecar = Path(f"{path}{suffix}")
+        sidecar_info = _lstat(sidecar)
+        if sidecar_info is None:
+            continue
+        if stat.S_ISLNK(sidecar_info.st_mode):
+            return f"{label} is a symbolic link: {sidecar}"
+        if not stat.S_ISREG(sidecar_info.st_mode):
+            return f"{label} is not a regular file: {sidecar}"
+        if sidecar_info.st_uid != expected_uid:
+            return (
+                f"{label} owner uid {sidecar_info.st_uid} does not match process uid "
+                f"{expected_uid}: {sidecar}"
+            )
+        if sidecar_info.st_nlink != 1:
+            return f"{label} has {sidecar_info.st_nlink} hard links (expected 1): {sidecar}"
+    return None
 
 
 def storage_privacy_findings(db_path: Path | None = None) -> list[str]:
@@ -227,12 +414,21 @@ def storage_privacy_findings(db_path: Path | None = None) -> list[str]:
     """
     path = Path(db_path or DEFAULT_DB).expanduser().absolute()
     findings: list[str] = []
-    expected_uid = os.geteuid()
+    expected_uid = _effective_uid()
 
-    def inspect(label: str, target: Path, expected_mode: int, *, directory: bool) -> None:
+    def inspect(
+        label: str,
+        target: Path,
+        expected_mode: int,
+        *,
+        directory: bool,
+        required: bool,
+    ) -> None:
         try:
             info = target.lstat()
         except FileNotFoundError:
+            if required:
+                findings.append(f"{label} is missing: {target}")
             return
         if stat.S_ISLNK(info.st_mode):
             findings.append(f"{label} is a symbolic link: {target}")
@@ -255,23 +451,39 @@ def storage_privacy_findings(db_path: Path | None = None) -> list[str]:
         if not directory and info.st_nlink != 1:
             findings.append(f"{label} has {info.st_nlink} hard links (expected 1): {target}")
 
-    inspect("directory", path.parent, PRIVATE_DIRECTORY_MODE, directory=True)
-    inspect("database", path, PRIVATE_FILE_MODE, directory=False)
+    inspect("directory", path.parent, PRIVATE_DIRECTORY_MODE, directory=True, required=True)
+    inspect("database", path, PRIVATE_FILE_MODE, directory=False, required=True)
     for suffix, label in (
         ("-wal", "WAL"),
         ("-shm", "shared memory"),
         ("-journal", "rollback journal"),
     ):
-        inspect(label, Path(f"{path}{suffix}"), PRIVATE_FILE_MODE, directory=False)
+        inspect(
+            label,
+            Path(f"{path}{suffix}"),
+            PRIVATE_FILE_MODE,
+            directory=False,
+            required=False,
+        )
     return findings
 
 
 def connect(db_path: Path | None = None) -> sqlite3.Connection:
     """Open (creating if needed) and migrate forward. Never migrates backward."""
     path = Path(db_path or DEFAULT_DB).expanduser().absolute()
-    _create_private_parents(path.parent)
-    _create_private_database(path)
-    conn = sqlite3.connect(path)
+    blocker = storage_open_blocker(path)
+    if _lstat(path) is None:
+        if blocker:
+            raise JanusError(f"refusing unsafe new ledger path: {blocker}")
+        _create_private_parents(path.parent)
+        _create_private_database(path)
+        blocker = storage_open_blocker(path)
+    if blocker:
+        raise JanusError(f"refusing unsafe ledger path: {blocker}")
+    try:
+        conn = sqlite3.connect(path)
+    except sqlite3.Error as exc:
+        raise JanusError(f"cannot open ledger {path}: {exc}") from exc
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")

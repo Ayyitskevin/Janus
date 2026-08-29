@@ -12,13 +12,20 @@ not isolate mutually untrusted processes running as that user. Any process able
 to reach the database can read every gate and write rulings; the boundary is the
 bind and the file permissions, nothing more.
 
+The filesystem half of this boundary requires POSIX ownership and mode
+semantics. Janus refuses on platforms where it cannot prove them.
+
 Janus therefore creates every missing ledger directory as `0700` and reserves a
-new database as `0600` before SQLite opens it. `doctor` checks the active
-database family—including WAL, shared-memory, and rollback-journal sidecars—for
-owner, regular-file type, exact mode, symlinks, and hard links. It does not
-repair an existing path: changing live filesystem state inside a diagnostic
-would hide an operational migration. A failed storage line is a deliberate
-operator action, not permission for Janus to chmod the world it found.
+new database as `0600` before SQLite opens it. A new path must have a
+symlink-free, replacement-safe ancestor chain; a pre-existing ledger directory
+must already be private. `doctor` checks the active database family—including
+WAL, shared-memory, and rollback-journal sidecars—for owner, regular-file type,
+exact mode, symlinks, and hard links. It does not repair an existing path:
+changing live filesystem state inside a diagnostic would hide an operational
+migration. Broad modes on an otherwise stable existing database remain an
+operator finding, while identity hazards are refused before open. A failed
+storage line is a deliberate operator action, not permission for Janus to chmod
+the world it found.
 
 This is inherited, not chosen, and it is why Janus must never enter the
 permission path. A system that treats a Janus read as sufficient grounds to act

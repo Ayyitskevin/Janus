@@ -702,7 +702,7 @@ def cmd_revise_check(a, conn) -> int:
     return 0
 
 
-def cmd_doctor(a, conn) -> int:
+def cmd_doctor(a, conn, *, open_blocker: str | None = None) -> int:
     problems = 0
     origin = _code_origin(Path(core.__file__).resolve().parent)
     if origin["installed"]:
@@ -715,6 +715,8 @@ def cmd_doctor(a, conn) -> int:
               "host runs")
     print(f"db          {core.DEFAULT_DB if not a.db else a.db}")
     storage_findings = core.storage_privacy_findings(a.db)
+    if open_blocker and open_blocker not in storage_findings:
+        storage_findings.append(open_blocker)
     if storage_findings:
         problems += 1
         for finding in storage_findings:
@@ -723,6 +725,9 @@ def cmd_doctor(a, conn) -> int:
               "ledger deliberately")
     else:
         print("storage     private (directory 0700; database family 0600; owner only)")
+    if conn is None:
+        print("ledger      checks skipped — storage identity is unsafe to open")
+        return 1
     versions = [r["version"] for r in conn.execute(
         "SELECT version FROM schema_migrations ORDER BY version")]
     print(f"migrations  {', '.join(versions) or 'none'}")
@@ -878,6 +883,15 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.cmd == "export":
             return args.fn(args)
+        if args.cmd == "doctor":
+            blocker = core.storage_open_blocker(args.db)
+            if blocker:
+                return args.fn(args, None, open_blocker=blocker)
+            try:
+                conn = core.connect(args.db)
+            except JanusError as e:
+                return args.fn(args, None, open_blocker=str(e))
+            return args.fn(args, conn)
         conn = core.connect(args.db)
         return args.fn(args, conn)
     except JanusError as e:
