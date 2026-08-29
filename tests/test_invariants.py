@@ -955,6 +955,46 @@ def test_single_check_prints_the_command_before_calling_observe(conn, capsys, mo
     assert cli.cmd_check(args, conn) == 0
 
 
+def test_single_check_flushes_the_preview_before_calling_observe(conn, monkeypatch):
+    from janus import cli
+
+    command = "true # flush this before execution"
+    g = _gate(conn, decay_check=command)
+    events = []
+
+    monkeypatch.setattr(sys.stdout, "flush", lambda: events.append("flush"))
+
+    def observe_after_flush(*_args, **_kwargs):
+        events.append("observe")
+        return {"exit_code": 0, "output": ""}
+
+    monkeypatch.setattr(core, "observe", observe_after_flush)
+    args = SimpleNamespace(gate_id=g, kind="decay", seat="tester", yes=True)
+
+    assert cli.cmd_check(args, conn) == 0
+    assert events.index("flush") < events.index("observe")
+
+
+def test_board_binds_execution_to_each_previewed_command(conn, monkeypatch):
+    from janus import cli
+
+    command = "true # board command identity"
+    g = _gate(conn, decay_check=command)
+    calls = []
+
+    def observe_previewed(_conn, gate_id, kind, actor, *, expected_command=None):
+        calls.append((gate_id, kind, actor, expected_command))
+        return {"exit_code": 0, "output": ""}
+
+    monkeypatch.setattr(core, "observe", observe_previewed)
+    args = SimpleNamespace(check=True, all=True, yes=True, seat="tester")
+
+    assert cli.cmd_board(args, conn) == 0
+    assert len(calls) == 1
+    assert calls[0][:2] == (g, "decay")
+    assert calls[0][3] == command
+
+
 def test_single_check_interactive_decline_runs_and_records_nothing(
     tmp_path, capsys, monkeypatch
 ):
@@ -978,7 +1018,7 @@ def test_single_check_interactive_decline_runs_and_records_nothing(
 
 
 def test_single_check_refuses_if_the_command_changes_after_preview(tmp_path, monkeypatch):
-    """Consent binds the displayed bytes, not whatever is effective later."""
+    """A revision visible at the final command load invalidates consent."""
     from janus import cli
 
     db = tmp_path / "single.db"
@@ -1009,6 +1049,39 @@ def test_single_check_refuses_if_the_command_changes_after_preview(tmp_path, mon
 
     assert not previewed.exists() and not replacement.exists()
     assert core.latest_observation(conn, g, "decay") is None
+
+
+def test_revision_after_final_load_cannot_substitute_unseen_command(tmp_path, monkeypatch):
+    """No database lock is needed when the displayed bytes are held locally."""
+    db = tmp_path / "single.db"
+    conn = core.connect(db)
+    displayed = "true # displayed and held locally"
+    unseen = "false # becomes effective only for the next run"
+    g = _gate(conn, decay_check=displayed)
+
+    def revise_after_load(command, **_kwargs):
+        assert command == displayed
+        other = core.connect(db)
+        core.revise_check(
+            other,
+            g,
+            "decay",
+            unseen,
+            "other-seat",
+            "the revision committed after observe loaded the displayed bytes",
+        )
+        other.close()
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(core.subprocess, "run", revise_after_load)
+
+    result = core.observe(
+        conn, g, "decay", "tester", expected_command=displayed
+    )
+
+    assert result["command"] == displayed and result["exit_code"] == 0
+    assert core.latest_observation(conn, g, "decay")["command"] == displayed
+    assert core.get_gate(conn, g)["effective_decay_check"] == unseen
 
 
 def test_decide_refuses_to_rule_on_drifted_bytes_without_yes(tmp_path):

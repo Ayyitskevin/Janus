@@ -454,8 +454,11 @@ def observe(conn: sqlite3.Connection, gate_id: str, kind: str, actor: str,
         raise JanusError(f"gate {gate_id} carries no {kind} check")
     # A CLI confirmation is consent to the command that was DISPLAYED. Check
     # revisions are append-only but can arrive from another process while the
-    # operator is reading that preview. Never let a newer, unseen command ride
-    # on consent given to its predecessor.
+    # operator is reading that preview. A revision visible here invalidates the
+    # preview. One committed after this read cannot replace the local `cmd`; it
+    # becomes effective on the next run without making this displayed command
+    # hold SQLite's global writer lock for the duration of an arbitrary shell
+    # timeout.
     if expected_command is not None and cmd != expected_command:
         raise JanusError(
             f"gate {gate_id}'s {kind} check changed after preview; nothing ran. "

@@ -6,7 +6,8 @@ Running one stored check must cross the same visible, explicit execution
 boundary as running the board's batch. Janus prints each effective command in
 full, flushes the preview, and then either receives interactive confirmation or
 requires `--yes` from an unattended caller. Consent applies only to the exact
-command displayed; a concurrent revision fails closed.
+command displayed: a revision visible at the final load fails closed, while a
+later commit cannot substitute its unseen bytes and applies to the next run.
 
 This is a security boundary around intentional same-user shell execution. It is
 not shell sanitization, a sandbox, or authority to execute a gate written by a
@@ -42,8 +43,11 @@ The invariant suite covers these distinct cases:
 6. the preview occurs before the call into the execution function;
 7. an interactive decline records and executes nothing;
 8. decay and delivery kinds use the same boundary;
-9. a revision between preview and execution invalidates consent; and
-10. the board's existing unattended refusal and full-preview behavior remains
+9. a revision visible at the final command load invalidates consent;
+10. a revision committed after that load cannot replace the displayed bytes;
+11. stdout is flushed before the execution function is called;
+12. the board passes each previewed command into the same identity guard; and
+13. the board's existing unattended refusal and full-preview behavior remains
     unchanged through the shared implementation.
 
 ## Assumptions and non-goals
@@ -67,7 +71,10 @@ The invariant suite covers these distinct cases:
   tests/test_invariants.py -k 'command_changes_after_preview'` failed because
   no error was raised and the unseen replacement executed. Restoring the guard
   makes the test pass.
-- `./scripts/check.sh` compiles the package and passes all 73 invariant tests.
+- With both the explicit stdout flush and the board's expected-command argument
+  deliberately removed, their two focused regressions failed. Restoring both
+  makes the tests pass.
+- `./scripts/check.sh` compiles the package and passes all 76 invariant tests.
 - A clean Python 3.12 virtual environment installed the candidate as a regular
   site-packages copy (not editable). Its unattended call exited 2, printed the
   complete command and `--yes` recovery, and left zero observations and no

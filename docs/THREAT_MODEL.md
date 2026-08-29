@@ -45,11 +45,14 @@ the operator read it: the board was corrected first, while the single-check path
 remained an unguarded execution path. Both now share one boundary that prints
 every effective command in full, flushes the preview before execution, and asks
 for confirmation. A non-interactive caller must pass `--yes`; that skips the
-prompt, not the preview. Consent binds the exact displayed command, so a check
-revision appended while the preview is being read makes execution fail closed
-rather than substituting unseen text. A check that hangs is killed and recorded
-as exit `124` rather than escaping as an exception, because an unrecorded check
-is indistinguishable from one never run.
+prompt, not the preview. Consent binds the exact displayed command. A revision
+visible when execution loads the gate invalidates that consent; one committed
+after the final load cannot replace the displayed command held locally and
+becomes effective on the next run. Janus therefore does not hold SQLite's global
+writer lock across an arbitrary shell timeout merely to freeze the revision
+table. A check that hangs is killed and recorded as exit `124` rather than
+escaping as an exception, because an unrecorded check is indistinguishable from
+one never run.
 
 *Where this becomes remote code execution.* Everything above holds only while a
 gate can be written solely by a process already running as this user — writing a
