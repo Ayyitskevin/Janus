@@ -1,7 +1,8 @@
-"""The stable, read-only Janus interchange surface.
+"""The stable, logically read-only Janus interchange surface.
 
 An export reports ledger evidence. It never verifies live bindings, executes
-stored checks, or answers whether a consumer may act.
+stored checks, changes ledger content, or answers whether a consumer may act.
+SQLite may materialize private WAL coordination sidecars for a safe snapshot.
 """
 
 from __future__ import annotations
@@ -289,7 +290,7 @@ def _record(
 
 
 def export_gates(db_path: Path | None = None, gate_id: str | None = None) -> bytes:
-    """Export all gates, or one gate, from one read-only database snapshot."""
+    """Export gates without changing logical content or creating the main DB."""
     conn = _connect_read_only(db_path)
     try:
         conn.execute("BEGIN")
@@ -362,11 +363,20 @@ def export_gates(db_path: Path | None = None, gate_id: str | None = None) -> byt
                 "document_sha256": _sha256(document),
             },
         }
-        return canonical_json(envelope)
+        result = canonical_json(envelope)
     except sqlite3.Error as exc:
         raise JanusError(f"cannot export this ledger: {exc}") from exc
     finally:
         conn.close()
+    # WAL readers may create -wal/-shm coordination files even in mode=ro.
+    # Re-check after close so the documented physical side effect cannot weaken
+    # the same exact storage boundary that admitted the snapshot.
+    blocker = core.storage_open_blocker(db_path)
+    if blocker:
+        raise JanusError(
+            f"cannot export: SQLite coordination storage became unsafe: {blocker}"
+        )
+    return result
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:

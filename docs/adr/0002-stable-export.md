@@ -28,9 +28,18 @@ janus export <gate-id>   # one gate, in the identical record shape
 ```
 
 The operation emits the `janus.export.v1` canonical JSON envelope documented
-in `docs/spec/export-v1.md`. It is read-only by construction: it opens the
-ledger with SQLite `mode=ro` and `query_only`, applies no migration, writes no
-audit event, executes no stored check, and does not inspect a bound artifact.
+in `docs/spec/export-v1.md`. It is logically read-only by construction: it
+opens the ledger with SQLite `mode=ro` and `query_only`, applies no migration,
+writes no database row or audit event, executes no stored check, and does not
+inspect a bound artifact. It never creates the main database.
+
+SQLite's safe snapshot protocol for a WAL-mode database may nevertheless
+materialize `-wal` and `-shm` coordination files beside a cleanly closed main
+database. Those files are physical coordination state, not ledger mutations.
+Janus admits export only inside its private directory boundary and post-checks
+the complete family after the connection closes, so SQLite cannot silently
+weaken the exact `0600` file contract. This side effect is explicit because
+calling it nonexistent would make the read-only claim misleading.
 
 The envelope declares Janus's exact gate-state vocabulary and the two semantic
 facts consumers previously copied: whether each state is terminal and whether
@@ -61,6 +70,10 @@ and selection have one digest; the consumer records when it read those bytes.
   mismatches, or digest mismatches fail closed.
 - Stored commands and locators remain inert data and may be sensitive. An
   export inherits the ledger's confidentiality.
+- On WAL-mode storage, a successful export may create or update private
+  `-wal`/`-shm` coordination files. It does not create the main database or
+  change logical ledger content, and it refuses any coordination file that is
+  not inside the exact owner-only boundary.
 - Existing `list --json` and `show --json` remain unstable human/diagnostic
   views. They are not aliases for the export contract.
 - A later loopback GET may serve these exact bytes. It does not earn a second
@@ -81,6 +94,20 @@ and selection have one digest; the consumer records when it read those bytes.
 - **Include live drift or decay verdicts.** Rejected: export would gain side
   effects or freeze time-derived claims. Their recorded inputs travel; current
   verdicts remain the reader's deliberate computation.
+- **Open with `immutable=1` to suppress WAL coordination.** Rejected: SQLite
+  skips locking and change detection only when the file truly cannot change.
+  Janus is a live ledger; falsely asserting immutability can return incorrect
+  results or corruption errors during a concurrent write.
+- **Copy only the main database into a temporary snapshot.** Rejected: committed
+  rows may still live in the WAL, and copying the family without SQLite's
+  locking protocol does not produce an atomic snapshot.
 - **Depend on an external canonical-JSON package.** Rejected: the ledger is
   standard-library-only and locally substitutable. Janus instead publishes a
   deliberately narrow canonicalizer plus conformance vectors.
+
+## Sources
+
+- SQLite WAL read-only requirements and sidecar lifecycle:
+  https://sqlite.org/wal.html#read_only_databases
+- SQLite `immutable=1` semantics and incorrect-result warning:
+  https://sqlite.org/uri.html#uriimmutable

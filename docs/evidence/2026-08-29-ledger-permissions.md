@@ -83,7 +83,11 @@ Invariant tests additionally prove:
   than recreating it;
 - rollback-journal identity is inspected before `doctor` opens SQLite;
 - stable export refuses replaceable directories, database/directory symlinks,
-  hard links, and sidecar type hazards without creating or migrating storage;
+  hard links, and sidecar type hazards without creating the main database or
+  migrating schema;
+- a successful WAL-mode export may materialize only `-wal`/`-shm`
+  coordination entries; the main database bytes remain unchanged, new entries
+  are `0600`, and a post-read mode fault is refused;
 - `doctor` exits `1` on broad existing storage while its modes remain
   byte-for-byte unchanged;
 - `doctor` exits `1` without creating a missing ledger, reports a storage
@@ -131,7 +135,7 @@ user grant changed the database mode to `0670`; `chmod 0600` restored a zero ACL
 mask and `effective:---`. This matches the `acl(5)` access-check algorithm: the
 group mode bits correspond to the ACL mask that caps named-user/group entries.
 
-After implementation, the exact full repository gate passed **134 tests**. A
+After implementation, the exact full repository gate passed **136 tests**. A
 descriptor-hardening mutation then produced one failure under umask `777` while
 the `000` case still passed; restoring the exact candidate returned both cases
 to green. A non-editable wheel installed into a clean Python 3.12 environment;

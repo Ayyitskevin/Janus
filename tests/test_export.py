@@ -357,7 +357,7 @@ def test_export_opens_the_ledger_read_only(monkeypatch, populated_ledger):
     assert calls[0][1].get("uri") is True
 
 
-def test_export_neither_creates_nor_migrates_a_ledger(tmp_path: Path):
+def test_export_neither_creates_the_main_database_nor_migrates_a_ledger(tmp_path: Path):
     missing = tmp_path / "missing.db"
     with pytest.raises(JanusError, match="no Janus ledger"):
         stable_export.export_gates(missing)
@@ -374,6 +374,47 @@ def test_export_neither_creates_nor_migrates_a_ledger(tmp_path: Path):
         assert check.execute(
             "SELECT COUNT(*) FROM schema_migrations WHERE version = '0002_check_revisions'"
         ).fetchone()[0] == 0
+
+
+def test_export_may_materialize_only_private_sqlite_coordination_sidecars(tmp_path: Path):
+    db = tmp_path / "janus.db"
+    conn = core.connect(db)
+    conn.close()
+    before_names = {path.name for path in tmp_path.iterdir()}
+    before_database = db.read_bytes()
+
+    stable_export.export_gates(db)
+
+    after_names = {path.name for path in tmp_path.iterdir()}
+    created = after_names - before_names
+    allowed = {f"{db.name}-wal", f"{db.name}-shm"}
+    assert created <= allowed
+    assert db.read_bytes() == before_database
+    for name in created:
+        assert (tmp_path / name).stat().st_mode & 0o777 == 0o600
+
+
+def test_export_postchecks_sqlite_coordination_sidecars(tmp_path: Path, monkeypatch):
+    db = tmp_path / "janus.db"
+    conn = core.connect(db)
+    conn.close()
+    real_blocker = core.storage_open_blocker
+    blocker_calls = 0
+
+    def broaden_sidecar_before_postcheck(path):
+        nonlocal blocker_calls
+        blocker_calls += 1
+        if blocker_calls == 2:
+            Path(f"{db}-wal").chmod(0o644)
+        return real_blocker(path)
+
+    monkeypatch.setattr(core, "storage_open_blocker", broaden_sidecar_before_postcheck)
+    with pytest.raises(
+        JanusError,
+        match="SQLite coordination storage became unsafe.*WAL mode 0644",
+    ):
+        stable_export.export_gates(db)
+    assert blocker_calls == 2
 
 
 def test_export_uses_the_same_storage_identity_boundary(tmp_path: Path):
