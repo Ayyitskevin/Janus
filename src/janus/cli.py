@@ -375,35 +375,41 @@ _DECAY_RANK = {"landed": 0, "broken": 1, "unchecked": 1, "unmeasured": 1, "not y
 _BROKEN_EXITS = (core.TIMEOUT_EXIT, 127)
 
 
-def _decay_status(conn, g: dict) -> str:
-    """What is actually known about this gate's decay — never a guess.
+def _decay_evidence(conn, g: dict) -> tuple[str, dict | None]:
+    """Return what is known about decay and the observation that supports it.
 
     `unmeasured` and `unchecked` are printed rather than left blank on purpose.
     A decay sentence with no re-runnable check is a claim, and a board that
-    renders a claim identically to an observation flatters the prose.
+    renders a claim identically to an observation flatters the prose. Returning
+    the status and observation together also prevents the board from deriving a
+    verdict from one query and its freshness from another.
     """
-    obs = core.latest_observation(conn, g["id"], "decay")
+    obs = core.latest_decay_observation(conn, g["id"])
     if obs:
         if obs["exit_code"] == 0:
-            return "landed"
-        return "broken" if obs["exit_code"] in _BROKEN_EXITS else "not yet"
-    return "unchecked" if g["effective_decay_check"] else "unmeasured"
+            return "landed", obs
+        status = "broken" if obs["exit_code"] in _BROKEN_EXITS else "not yet"
+        return status, obs
+    status = "unchecked" if g["effective_decay_check"] else "unmeasured"
+    return status, None
 
 
-def _delivery_status(conn, g: dict) -> str:
-    """What a valid post-ruling check reported about an approved effect.
+def _delivery_evidence(conn, g: dict) -> tuple[str, dict | None]:
+    """Return valid delivery evidence and the observation that supports it.
 
     A ruling closes the DECISION; it does not make a token, edit, or other
     consumer effect exist. `unchecked` is therefore a real answer and must not
     be rendered as delivered.  The returned label describes the stored check,
-    not causality or the identity of today's artifact bytes.
+    not causality or the identity of today's artifact bytes. Its observation is
+    returned from the same query so the board cannot misstate evidence age.
     """
     obs = core.latest_delivery_observation(conn, g["id"])
     if obs:
         if obs["exit_code"] == 0:
-            return "delivered"
-        return "broken" if obs["exit_code"] in _BROKEN_EXITS else "not landed"
-    return "unchecked"
+            return "delivered", obs
+        status = "broken" if obs["exit_code"] in _BROKEN_EXITS else "not landed"
+        return status, obs
+    return "unchecked", None
 
 
 def _age(iso: str) -> tuple[int, str]:
@@ -470,8 +476,10 @@ def cmd_board(a, conn) -> int:
     rows = []
     for g in core.list_gates(conn, state="open"):
         secs, age = _age(g["raised_at"])
+        status, observation = _decay_evidence(conn, g)
         rows.append({"g": g, "secs": secs, "age": age,
-                     "status": _decay_status(conn, g), "overdue": _overdue(g)})
+                     "status": status, "observation": observation,
+                     "overdue": _overdue(g)})
     rows.sort(key=lambda r: (_DECAY_RANK[r["status"]], 0 if r["overdue"] else 1, -r["secs"]))
 
     # ADR 0001 promised this section and the first build of the board did not
@@ -487,11 +495,12 @@ def cmd_board(a, conn) -> int:
             # there forever and train the reader to skip the section.
             unwatched += 1
             continue
-        status = _delivery_status(conn, g)
+        status, observation = _delivery_evidence(conn, g)
         if status == "delivered":
             continue
         secs, age = _age(g["ruling"]["ruled_at"])
-        promised.append({"g": g, "secs": secs, "age": age, "status": status})
+        promised.append({"g": g, "secs": secs, "age": age, "status": status,
+                         "observation": observation})
     promised.sort(key=lambda r: (r["status"] != "not landed", -r["secs"]))
 
     if not rows and not promised:
@@ -533,9 +542,11 @@ def cmd_board(a, conn) -> int:
     for r in rows[:shown]:
         g = r["g"]
         age = r["age"] + ("!" if r["overdue"] else "")
+        observed = "observed" if r["observation"] else ""
+        observed_age = _age(r["observation"]["at"])[1] if r["observation"] else ""
         print(f"  {r['status']:<10}  {age:<5}  {g['id']:<12}  {g['kind']:<12}  "
               f"{_clip(g['question'], body)}")
-        print(f"  {'':<10}  {'':<5}  {'':<12}  {'worsens →':<12}  "
+        print(f"  {observed:<10}  {observed_age:<5}  {'':<12}  {'worsens →':<12}  "
               f"{_clip(g['decay'], body)}")
 
     hidden = len(rows) - shown
@@ -548,9 +559,11 @@ def cmd_board(a, conn) -> int:
         print(f"\n  PROMISED, NOT DELIVERED — {len(promised)} approved, still waiting to land")
         for r in promised[:shown_p]:
             g = r["g"]
+            observed = "observed" if r["observation"] else ""
+            observed_age = _age(r["observation"]["at"])[1] if r["observation"] else ""
             print(f"  {r['status']:<10}  {r['age']:<5}  {g['id']:<12}  {g['kind']:<12}  "
                   f"{_clip(g['question'], body)}")
-            print(f"  {'':<10}  {'':<5}  {'':<12}  {'check →':<12}  "
+            print(f"  {observed:<10}  {observed_age:<5}  {'':<12}  {'check →':<12}  "
                   f"{_clip(g['effective_delivery_check'], body)}")
         hidden_p = len(promised) - shown_p
         if hidden_p > 0:
@@ -564,6 +577,8 @@ def cmd_board(a, conn) -> int:
         Sorted by observed decay, then a passed horizon (!), then the longest wait.
         'unmeasured' means the decay sentence carries no re-runnable check — unknown,
         which is not the same as fine. `janus board --check` runs the checks that exist.
+        A measured status shows its observation age on the following line; gate and
+        ruling age stay on the first line. Janus does not invent a freshness threshold.
         A ruling closes a decision; it does not make the promised thing exist, so an
         approved gate stays under PROMISED until its own check says it landed.
         `janus show <id>` for the full question and its options.

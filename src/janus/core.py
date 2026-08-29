@@ -845,6 +845,48 @@ def latest_observation(conn: sqlite3.Connection, gate_id: str, kind: str) -> dic
     return dict(row) if row else None
 
 
+def latest_decay_observation(conn: sqlite3.Connection, gate_id: str) -> dict | None:
+    """Return the latest decay result eligible for the effective check.
+
+    Revising a check starts a new measurement epoch. The predecessor's result
+    remains append-only history, but it cannot describe the replacement even
+    when wall clocks move or both commands happen to contain identical text.
+    Audit ids provide the transaction order that timestamps cannot.
+    """
+    row = conn.execute(
+        "SELECT * FROM observations WHERE gate_id = ? AND kind = 'decay'"
+        " ORDER BY id DESC LIMIT 1",
+        (gate_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    observation = dict(row)
+    gate = conn.execute(
+        "SELECT decay_check FROM gates WHERE id = ?", (gate_id,)
+    ).fetchone()
+    current_command = effective_check(
+        conn, gate_id, "decay", gate["decay_check"] if gate else None
+    )
+    if current_command is None or observation["command"] != current_command:
+        return None
+
+    observed_audit = conn.execute(
+        "SELECT id FROM audit_events WHERE gate_id = ? AND verb = 'observe:decay'"
+        " ORDER BY id DESC LIMIT 1",
+        (gate_id,),
+    ).fetchone()
+    revised_audit = conn.execute(
+        "SELECT id FROM audit_events WHERE gate_id = ? AND verb = 'revise:decay'"
+        " ORDER BY id DESC LIMIT 1",
+        (gate_id,),
+    ).fetchone()
+    if observed_audit is None or (
+        revised_audit is not None and observed_audit["id"] <= revised_audit["id"]
+    ):
+        return None
+    return observation
+
+
 def latest_delivery_observation(conn: sqlite3.Connection, gate_id: str) -> dict | None:
     """Return the latest delivery result eligible to explain an approved action.
 

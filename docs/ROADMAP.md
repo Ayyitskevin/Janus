@@ -64,6 +64,10 @@ write.
   horizon, then by the longest wait; no priority field exists to sort by.
   Rank order is `landed` → `unchecked`/`unmeasured` → `not yet`: evidence of
   slack demotes a gate, while absence of evidence does not promote it to safe.
+  A measured status carries the age of the observation that supports it,
+  separately from gate or ruling age; freshness is visible without an invented
+  expiry threshold. A check revision invalidates its predecessor's status until
+  the replacement is observed.
   When the queue outgrows one screen the board says how many it hid and why,
   because a board that silently drops rows is the surface it replaces.
 - ~~The board surfaces approved gates whose delivery check still fails, under

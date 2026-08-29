@@ -31,6 +31,12 @@ any priority field — a decay check that has fired outranks one that has never
 been run, which outranks one measured to still have time. A gate whose decay
 sentence carries no re-runnable check is printed as `unmeasured`, because
 unknown is not the same as fine. `janus list` remains the plain enumeration.
+Measured rows show two different clocks rather than blending them: gate or
+ruling age is on the first line, and the age of the status-driving observation
+is on the second. Janus exposes freshness without inventing a threshold at
+which evidence automatically becomes stale. Revising a check starts a new
+measurement epoch: predecessor observations remain history, while the board
+returns to `unchecked` until the effective check runs.
 
 A check is executable text written once, at raise time, by someone guessing at a
 future they have not seen — so `revise-check` exists for when it turns out to
