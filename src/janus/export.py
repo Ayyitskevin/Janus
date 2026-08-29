@@ -86,9 +86,17 @@ def _sha256(value: Any) -> str:
 
 
 def _connect_read_only(db_path: Path | None) -> sqlite3.Connection:
-    path = Path(db_path or core.DEFAULT_DB).expanduser().resolve()
-    if not path.is_file():
+    path = Path(db_path or core.DEFAULT_DB).expanduser().absolute()
+    try:
+        path.lstat()
+    except FileNotFoundError:
         raise JanusError(f"cannot export: no Janus ledger at {path}")
+    except OSError as exc:
+        detail = exc.strerror or type(exc).__name__
+        raise JanusError(f"cannot export: cannot inspect ledger {path}: {detail}") from exc
+    blocker = core.storage_open_blocker(path)
+    if blocker:
+        raise JanusError(f"cannot export: refusing unsafe ledger path: {blocker}")
     try:
         conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row

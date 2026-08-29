@@ -68,6 +68,8 @@ Invariant tests additionally prove:
   equivalent sticky directory remains usable;
 - a failed descriptor hardening removes the exact empty file Janus created;
 - rollback-journal identity is inspected before `doctor` opens SQLite;
+- stable export refuses replaceable directories, database/directory symlinks,
+  hard links, and sidecar type hazards without creating or migrating storage;
 - `doctor` exits `1` on broad existing storage while its modes remain
   byte-for-byte unchanged;
 - `doctor` exits `0` and prints the exact `0700`/`0600` contract for a private
@@ -82,7 +84,12 @@ The repeated review held again because an existing ledger in a writable
 directory remained replaceable, and because an inaccessible path escaped as a
 traceback. Both now fail through structured diagnostics before SQLite opens.
 
-After implementation, the exact full repository gate passed **119 tests**. A
+The final spec review then found the same policy duplicated incorrectly at the
+stable export seam: its read-only connector resolved and opened the path
+directly. Export now calls the shared identity preflight before its unchanged
+`mode=ro` open, with adversarial coverage for both connectors.
+
+After implementation, the exact full repository gate passed **120 tests**. A
 descriptor-hardening mutation then produced one failure under umask `777` while
 the `000` case still passed; restoring the exact candidate returned both cases
 to green. A non-editable wheel installed into a clean Python 3.12 environment;
