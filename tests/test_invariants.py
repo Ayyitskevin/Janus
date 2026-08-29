@@ -166,14 +166,31 @@ def test_new_ledger_refuses_replaceable_existing_directory(tmp_path):
     conn = core.connect(existing_db)
     conn.close()
     existing.chmod(0o777)
-    with pytest.raises(JanusError, match="permits another OS user to replace"):
+    with pytest.raises(JanusError, match="directory mode 0700"):
         core.connect(existing_db)
 
-    # Sticky-directory ownership prevents another unprivileged user from
-    # renaming this user's existing database entry.
+    # Sticky protection covers an existing database name, but not absent
+    # WAL/SHM/journal names SQLite may create next.
     existing.chmod(0o1777)
-    reopened = core.connect(existing_db)
-    reopened.close()
+    with pytest.raises(JanusError, match="directory mode 0700"):
+        core.connect(existing_db)
+
+
+def test_existing_ledger_refuses_broad_database_family_modes(tmp_path):
+    db = tmp_path / "private" / "janus.db"
+    conn = core.connect(db)
+    conn.close()
+
+    db.chmod(0o666)
+    with pytest.raises(JanusError, match="database mode 0666"):
+        core.connect(db)
+
+    db.chmod(0o600)
+    journal = Path(f"{db}-journal")
+    journal.touch(mode=0o600)
+    journal.chmod(0o666)
+    with pytest.raises(JanusError, match="rollback journal mode 0666"):
+        core.connect(db)
 
 
 def test_new_ledger_refuses_symbolic_link_in_directory_chain(tmp_path):

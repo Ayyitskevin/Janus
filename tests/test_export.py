@@ -384,11 +384,12 @@ def test_export_uses_the_same_storage_identity_boundary(tmp_path: Path):
     original = db.read_bytes()
 
     directory.chmod(0o777)
-    with pytest.raises(JanusError, match="permits another OS user to replace"):
+    with pytest.raises(JanusError, match="directory mode 0700"):
         stable_export.export_gates(db)
 
     directory.chmod(0o1777)
-    stable_export.export_gates(db)
+    with pytest.raises(JanusError, match="directory mode 0700"):
+        stable_export.export_gates(db)
     directory.chmod(0o700)
 
     db_link = tmp_path / "database-link.db"
