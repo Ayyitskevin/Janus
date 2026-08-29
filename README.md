@@ -116,7 +116,7 @@ installed copy:
 
 ```bash
 rollback_commit=$(awk '$1 == "commit" {print $2}' ~/.local/share/janus/INSTALLED)
-prepared_parent=$(mktemp -d "$HOME/.local/share/janus/preparation.XXXXXX")
+prepared_parent=$(mktemp -d "$HOME/.local/share/janus-preparation.XXXXXX")
 python scripts/prepare_upgrade.py \
   --db "$HOME/.janus/janus.db" \
   --output "$prepared_parent/bundle" \
