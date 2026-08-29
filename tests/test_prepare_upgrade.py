@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import os
+from copy import deepcopy
 import shutil
 import sqlite3
 import stat
@@ -15,6 +16,7 @@ from pathlib import Path
 
 import pytest
 from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError
 
 PROJECT = Path(__file__).resolve().parents[1]
 SCRIPT = PROJECT / "scripts" / "prepare_upgrade.py"
@@ -100,7 +102,7 @@ def _legacy_ledger(root: Path, *, keep_open: bool = False):
     return db, gate_id, None
 
 
-def _committed_copy(root: Path) -> tuple[Path, str]:
+def _committed_copy(root: Path) -> tuple[Path, str, str]:
     repo = root / "repo"
     shutil.copytree(
         PROJECT,
@@ -120,10 +122,19 @@ def _committed_copy(root: Path) -> tuple[Path, str]:
     _run("git", "init", "-q", cwd=repo)
     _run("git", "config", "user.name", "Janus test", cwd=repo)
     _run("git", "config", "user.email", "janus-test@example.invalid", cwd=repo)
+    newest_migration = (
+        repo / "src" / "janus" / "migrations" / "0003_bound_rulings_require_digest.sql"
+    )
+    newest_migration_bytes = newest_migration.read_bytes()
+    newest_migration.unlink()
     _run("git", "add", ".", cwd=repo)
-    _run("git", "commit", "-qm", "candidate", cwd=repo)
-    commit = _run("git", "rev-parse", "HEAD", cwd=repo).stdout.strip()
-    return repo, commit
+    _run("git", "commit", "-qm", "rollback without migration 0003", cwd=repo)
+    rollback = _run("git", "rev-parse", "HEAD", cwd=repo).stdout.strip()
+    newest_migration.write_bytes(newest_migration_bytes)
+    _run("git", "add", str(newest_migration.relative_to(repo)), cwd=repo)
+    _run("git", "commit", "-qm", "candidate adds migration 0003", cwd=repo)
+    candidate = _run("git", "rev-parse", "HEAD", cwd=repo).stdout.strip()
+    return repo, rollback, candidate
 
 
 def _invoke(repo: Path, db: Path, output: Path, rollback: str, *, env=None):
@@ -185,7 +196,7 @@ def test_content_digest_detects_same_count_ledger_rewrite(tmp_path):
 
 
 def test_end_to_end_bundle_is_private_exact_and_non_deploying(tmp_path):
-    repo, commit = _committed_copy(tmp_path)
+    repo, rollback, commit = _committed_copy(tmp_path)
     db, _, _ = _legacy_ledger(tmp_path)
     output_parent = tmp_path / "prepared"
     output_parent.mkdir(mode=0o700)
@@ -197,7 +208,7 @@ def test_end_to_end_bundle_is_private_exact_and_non_deploying(tmp_path):
     (malicious / "__init__.py").write_text("raise RuntimeError('ambient Janus imported')\n")
     environment = {**os.environ, "PYTHONPATH": str(malicious.parent)}
 
-    result = _invoke(repo, db, output, commit, env=environment)
+    result = _invoke(repo, db, output, rollback, env=environment)
 
     assert result.returncode == 0, result.stderr
     manifest = json.loads((output / "manifest.json").read_text())
@@ -205,7 +216,8 @@ def test_end_to_end_bundle_is_private_exact_and_non_deploying(tmp_path):
     Draft202012Validator(_manifest_schema()).validate(manifest)
     assert manifest["schema"] == "janus.upgrade-preparation.v1"
     assert manifest["source"]["commit"] == commit
-    assert manifest["artifacts"]["rollback"]["commit"] == commit
+    assert manifest["artifacts"]["rollback"]["commit"] == rollback
+    assert rollback != commit
     assert manifest["deployment_performed"] is False
     assert manifest["live_source"]["logical_writes"] == 0
     assert manifest["rehearsal"]["candidate"]["counts"] == manifest["backup"]["counts"]
@@ -227,6 +239,15 @@ def test_end_to_end_bundle_is_private_exact_and_non_deploying(tmp_path):
         "0002_check_revisions",
         "0003_bound_rulings_require_digest",
     ]
+    assert manifest["rehearsal"]["candidate"]["packaged_migrations"] == [
+        "0001_initial",
+        "0002_check_revisions",
+        "0003_bound_rulings_require_digest",
+    ]
+    assert manifest["rehearsal"]["rollback"]["packaged_migrations"] == [
+        "0001_initial",
+        "0002_check_revisions",
+    ]
     assert "confidential incident" not in (output / "manifest.json").read_text()
     assert _sha256(db) == live_hash
     assert not (output / ".work").exists()
@@ -241,6 +262,26 @@ def test_end_to_end_bundle_is_private_exact_and_non_deploying(tmp_path):
     assert all(_mode(path) == 0o700 for path in directories)
     assert all(_mode(path) == 0o600 for path in output.rglob("*") if path.is_file())
 
+    wrong_roles = deepcopy(manifest)
+    wrong_roles["artifacts"]["candidate"]["files"] = deepcopy(
+        manifest["artifacts"]["rollback"]["files"]
+    )
+    with pytest.raises(ValidationError):
+        Draft202012Validator(_manifest_schema()).validate(wrong_roles)
+
+    duplicate_wheels = deepcopy(manifest)
+    wheel = next(
+        item
+        for item in duplicate_wheels["artifacts"]["candidate"]["files"]
+        if item["path"].endswith(".whl")
+    )
+    duplicate_wheels["artifacts"]["candidate"]["files"] = [
+        wheel,
+        {**wheel, "sha256": "0" * 64},
+    ]
+    with pytest.raises(ValidationError):
+        Draft202012Validator(_manifest_schema()).validate(duplicate_wheels)
+
 
 @pytest.mark.parametrize(
     ("case", "expected"),
@@ -252,13 +293,12 @@ def test_end_to_end_bundle_is_private_exact_and_non_deploying(tmp_path):
     ],
 )
 def test_refusals_publish_nothing(tmp_path, case, expected):
-    repo, commit = _committed_copy(tmp_path)
+    repo, rollback, _ = _committed_copy(tmp_path)
     db, _, _ = _legacy_ledger(tmp_path)
     output_parent = tmp_path / "prepared"
     output_parent.mkdir(mode=0o700)
     output_parent.chmod(0o700)
     output = output_parent / "bundle"
-    rollback = commit
     if case == "dirty":
         (repo / "untracked").write_text("not committed")
     elif case == "existing":
@@ -266,7 +306,7 @@ def test_refusals_publish_nothing(tmp_path, case, expected):
     elif case == "broad-parent":
         output_parent.chmod(0o755)
     elif case == "short-rollback":
-        rollback = commit[:12]
+        rollback = rollback[:12]
 
     result = _invoke(repo, db, output, rollback)
 
@@ -278,28 +318,45 @@ def test_refusals_publish_nothing(tmp_path, case, expected):
 
 
 def test_relative_paths_symlinks_and_hardlinks_are_refused(tmp_path):
-    repo, commit = _committed_copy(tmp_path)
+    repo, rollback, _ = _committed_copy(tmp_path)
     db, _, _ = _legacy_ledger(tmp_path)
     output_parent = tmp_path / "prepared"
     output_parent.mkdir(mode=0o700)
     output_parent.chmod(0o700)
 
     with pytest.raises(prepare_upgrade.PreparationError, match="--db must be an absolute path"):
-        prepare_upgrade.prepare(repo, Path("relative.db"), output_parent / "one", commit)
+        prepare_upgrade.prepare(repo, Path("relative.db"), output_parent / "one", rollback)
 
     db_link = tmp_path / "linked.db"
     db_link.symlink_to(db)
     with pytest.raises(prepare_upgrade.PreparationError, match="database is a symbolic link"):
-        prepare_upgrade.prepare(repo, db_link, output_parent / "two", commit)
+        prepare_upgrade.prepare(repo, db_link, output_parent / "two", rollback)
 
     hardlink = db.parent / "second-name.db"
     os.link(db, hardlink)
     with pytest.raises(prepare_upgrade.PreparationError, match="database has 2 hard links"):
-        prepare_upgrade.prepare(repo, db, output_parent / "three", commit)
+        prepare_upgrade.prepare(repo, db, output_parent / "three", rollback)
+
+
+def test_source_family_refuses_cross_account_replacement_and_writes(tmp_path, monkeypatch):
+    db, _, _ = _legacy_ledger(tmp_path)
+    db.parent.chmod(0o777)
+    with pytest.raises(prepare_upgrade.PreparationError, match="replace a child entry"):
+        prepare_upgrade._source_family(db)
+
+    db.parent.chmod(0o700)
+    db.chmod(0o602)
+    with pytest.raises(prepare_upgrade.PreparationError, match="writable by another OS user"):
+        prepare_upgrade._source_family(db)
+
+    db.chmod(0o660)
+    db.parent.chmod(0o770)
+    monkeypatch.setattr(prepare_upgrade, "_other_group_accounts", lambda group_id: [])
+    assert prepare_upgrade._source_family(db)["database"]["mode"] == "0660"
 
 
 def test_failure_removes_the_sensitive_staging_tree(tmp_path, monkeypatch):
-    repo, commit = _committed_copy(tmp_path)
+    repo, rollback, _ = _committed_copy(tmp_path)
     db, _, _ = _legacy_ledger(tmp_path)
     output_parent = tmp_path / "prepared"
     output_parent.mkdir(mode=0o700)
@@ -311,7 +368,7 @@ def test_failure_removes_the_sensitive_staging_tree(tmp_path, monkeypatch):
 
     monkeypatch.setattr(prepare_upgrade, "_rehearse", fail_rehearsal)
     with pytest.raises(prepare_upgrade.PreparationError, match="deliberate rehearsal failure"):
-        prepare_upgrade.prepare(repo, db, output, commit)
+        prepare_upgrade.prepare(repo, db, output, rollback)
 
     assert not output.exists()
     assert not list(output_parent.glob(".bundle.preparing-*"))
