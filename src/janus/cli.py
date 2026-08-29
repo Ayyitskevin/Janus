@@ -78,10 +78,10 @@ def cmd_raise(a, conn) -> int:
         print("  no decay check — the board will print this gate as 'unmeasured' and "
               "sort it\n              below every measured one. "
               "--decay-check '<command>' (exit 0 = the cost arrived).")
-    if a.kind == "resource" and not a.delivery_check:
-        print("  no delivery check — an approved resource gate is a promise, not a "
-              "delivery.\n              Without one, nothing can tell you whether it "
-              "ever landed.")
+    if not a.delivery_check:
+        print("  no delivery check — if approval requires action, the consumer "
+              "outcome will remain unmeasured.\n              --delivery-check "
+              "'<command>' (exit 0 = the approved effect landed).")
     return 0
 
 
@@ -135,9 +135,32 @@ def cmd_show(a, conn) -> int:
     if g["binding_sha256"]:
         print(f"\n  binding   {g['binding_kind']}:{g['binding_locator']}")
         print(f"            raised @ {g['binding_sha256'][:16]}")
-        ok, sentence = core.verify_binding(
-            g["binding_kind"], g["binding_locator"], g["binding_sha256"])
-        print(f"            {sentence}")
+        expected, basis = core.binding_basis(g)
+        if basis == "ruling":
+            print(f"            ruling @ {expected[:16]}")
+        binding_ok, sentence = core.verify_binding(
+            g["binding_kind"], g["binding_locator"], expected)
+        if binding_ok is True:
+            print(f"            current {basis}-time bytes match — {sentence}")
+        elif binding_ok is None:
+            print(f"            {sentence}")
+        else:
+            when = "THE RULING" if basis == "ruling" else "THE GATE WAS RAISED"
+            print(f"            BINDING CHANGED SINCE {when} — {sentence}")
+            if g["state"] == "approved":
+                delivery = core.latest_delivery_observation(conn, g["id"])
+                if delivery and delivery["exit_code"] == 0:
+                    print("            A post-ruling delivery check later reported success. "
+                          "That supports an approved effect, but it does not identify "
+                          "today's bytes or prove causality.")
+                elif delivery:
+                    print(f"            The latest post-ruling delivery check reported "
+                          f"exit={delivery['exit_code']}; delivery is not confirmed.")
+                else:
+                    print("            No valid post-ruling delivery observation exists, "
+                          "so Janus cannot tell approved delivery from unrelated drift.")
+                print("            The ruling remains evidence about its recorded bytes; "
+                      "it does not follow the live artifact.")
     if g["ruling"]:
         r = g["ruling"]
         print(f"\n  RULED     {r['state']} by {r['ruled_by']} at {r['ruled_at']}")
@@ -156,10 +179,28 @@ def cmd_show(a, conn) -> int:
                       "raise and ruling")
         print("\n  Reading this ruling is not authority. Re-verify the digest "
               "against the live artifact before acting.")
+    if g["state"] == "approved":
+        print("\n  delivery  ", end="")
+        delivery = core.latest_delivery_observation(conn, g["id"])
+        if not g["effective_delivery_check"]:
+            print("unmeasured — this gate carries no delivery check")
+        elif delivery is None:
+            print("unchecked since approval")
+        elif delivery["exit_code"] == 0:
+            print(f"check reported success at {delivery['at']}")
+        else:
+            print(f"latest check reported exit={delivery['exit_code']} at "
+                  f"{delivery['at']}; delivery is not confirmed")
+        if delivery is not None:
+            print("            Historical observation only: it does not identify "
+                  "live artifact bytes, prove causality, or grant authority.")
     if g["observations"]:
         print("\n  recent observations:")
         for o in g["observations"]:
-            verdict = "occurred/landed" if o["exit_code"] == 0 else "not yet"
+            if o["kind"] == "delivery":
+                verdict = "check passed" if o["exit_code"] == 0 else "not confirmed"
+            else:
+                verdict = "occurred" if o["exit_code"] == 0 else "not yet"
             print(f"    {o['at']} {o['kind']}: exit={o['exit_code']} ({verdict})")
     return 0
 
@@ -284,6 +325,11 @@ def cmd_check(a, conn) -> int:
     gate = core.get_gate(conn, a.gate_id)
     if gate is None:
         raise JanusError(f"no such gate: {a.gate_id}")
+    if a.kind == "delivery" and gate["state"] != "approved":
+        raise JanusError(
+            "a delivery check is post-action evidence and can run only after "
+            f"an approved ruling; gate {a.gate_id} is {gate['state']}. Nothing ran."
+        )
     command = _effective_command(gate, a.kind)
     if not command:
         raise JanusError(f"gate {a.gate_id} carries no {a.kind} check")
@@ -296,7 +342,10 @@ def cmd_check(a, conn) -> int:
         core.seat_actor(a.seat),
         expected_command=command,
     )
-    verdict = "occurred/landed" if result["exit_code"] == 0 else "not yet"
+    if a.kind == "delivery":
+        verdict = "check reported success" if result["exit_code"] == 0 else "not confirmed"
+    else:
+        verdict = "occurred" if result["exit_code"] == 0 else "not yet"
     print(f"{a.kind} check: exit={result['exit_code']} ({verdict})")
     if result["output"]:
         print(f"  {result['output'].strip()[:180]}")
@@ -342,14 +391,14 @@ def _decay_status(conn, g: dict) -> str:
 
 
 def _delivery_status(conn, g: dict) -> str:
-    """Whether an approved promise has actually landed.
+    """What a valid post-ruling check reported about an approved effect.
 
-    ADR 0001: "an `approved` resource gate is a promise, not a delivery, and the
-    consumer still has to check that the thing arrived." A ruling closes the
-    DECISION; it does not make a token exist. `unchecked` is therefore a real
-    answer and must not be rendered as delivered.
+    A ruling closes the DECISION; it does not make a token, edit, or other
+    consumer effect exist. `unchecked` is therefore a real answer and must not
+    be rendered as delivered.  The returned label describes the stored check,
+    not causality or the identity of today's artifact bytes.
     """
-    obs = core.latest_observation(conn, g["id"], "delivery")
+    obs = core.latest_delivery_observation(conn, g["id"])
     if obs:
         if obs["exit_code"] == 0:
             return "delivered"
@@ -426,17 +475,17 @@ def cmd_board(a, conn) -> int:
     rows.sort(key=lambda r: (_DECAY_RANK[r["status"]], 0 if r["overdue"] else 1, -r["secs"]))
 
     # ADR 0001 promised this section and the first build of the board did not
-    # ship it: "The board surfaces approved resource gates whose delivery check
-    # still fails, under their own heading." An approved gate has left the
-    # decision queue while the thing it promised may never have arrived, and
-    # nothing else in the fleet was watching that gap.
+    # ship it. An approved gate has left the decision queue while its consumer
+    # effect may never have arrived, and nothing else in the fleet was watching
+    # that gap. Resource delivery forced the feature; live adoption showed the
+    # same gap on authority gates whose approved edits were not observable.
     promised, unwatched = [], 0
     for g in core.list_gates(conn, state="approved"):
         if not g["effective_delivery_check"]:
-            # A resource gate approved without a check cannot ever be shown to
-            # have landed. Counted, not listed: a row nothing can clear would sit
+            # An approved gate without a check cannot ever be shown to have
+            # landed. Counted, not listed: a row nothing can clear would sit
             # there forever and train the reader to skip the section.
-            unwatched += 1 if g["kind"] == "resource" else 0
+            unwatched += 1
             continue
         status = _delivery_status(conn, g)
         if status == "delivered":
@@ -449,8 +498,8 @@ def cmd_board(a, conn) -> int:
         print("Nothing is waiting on a human." if not unwatched else
               "No decision is waiting on a human.")
         if unwatched:
-            print(f"\n  {unwatched} approved resource gate(s) carry no delivery check —"
-                  " nobody can tell whether they landed.")
+            print(f"\n  {unwatched} approved gate(s) carry no delivery check —"
+                  " their consumer outcomes are unmeasured.")
         return 0
 
     term = shutil.get_terminal_size(fallback=(100, 24))
@@ -508,8 +557,8 @@ def cmd_board(a, conn) -> int:
             print(f"\n  {hidden_p} more promise(s) below the fold — `janus board --all`.")
 
     if unwatched:
-        print(f"\n  {unwatched} approved resource gate(s) carry no delivery check —"
-              " nobody can tell whether they landed.")
+        print(f"\n  {unwatched} approved gate(s) carry no delivery check —"
+              " their consumer outcomes are unmeasured.")
 
     print(textwrap.dedent("""
         Sorted by observed decay, then a passed horizon (!), then the longest wait.
@@ -580,14 +629,15 @@ def _scorecard(conn) -> dict:
     # milestone cannot take directly: nothing records that a consumer acted. The
     # only observable proxy is a delivery check, so the number is split into what
     # is measurable and what is not, and UNKNOWN IS NEVER COUNTED AS ACTED.
-    measurable = [g for g in gates if g["effective_delivery_check"]]
+    eligible = core.list_gates(conn, state="approved")
+    measurable = [g for g in eligible if g["effective_delivery_check"]]
     confirmed = sum(
         1 for g in measurable
-        if (o := core.latest_observation(conn, g["id"], "delivery")) and o["exit_code"] == 0)
+        if (o := core.latest_delivery_observation(conn, g["id"])) and o["exit_code"] == 0)
 
     fields = {
         "decay check": sum(1 for g in gates if g["effective_decay_check"]),
-        "delivery check": len(measurable),
+        "delivery check": sum(1 for g in gates if g["effective_delivery_check"]),
         "binding": sum(1 for g in gates if g["binding_sha256"]),
         "options": sum(1 for g in gates if g["options"]),
         "horizon": sum(1 for g in gates if g["horizon"]),
@@ -603,8 +653,9 @@ def _scorecard(conn) -> dict:
         "closed": closed, "open": total - closed, "closed_by_state": by_state,
         "ruled": sum(by_state.get(k, 0) for k in core.RULED_STATES),
         "time_to_ruling_seconds": sorted(to_ruling),
-        "consumer_acted": {"measurable": len(measurable), "confirmed": confirmed,
-                           "unknown": total - len(measurable)},
+        "consumer_acted": {"eligible": len(eligible), "measurable": len(measurable),
+                           "confirmed": confirmed,
+                           "unknown": len(eligible) - len(measurable)},
         "fields": fields,
         "observations": checked["obs"], "gates_ever_checked": checked["g"],
     }
@@ -651,7 +702,8 @@ def cmd_stats(a, conn) -> int:
           "a fast ruling.")
 
     c = d["consumer_acted"]
-    print(f"\nCONSUMER ACTED            measurable {_pct(c['measurable'], d['raised'])}"
+    print(f"\nCONSUMER ACTED            eligible {c['eligible']} approved gate(s) · "
+          f"measurable {_pct(c['measurable'], c['eligible'])}"
           f" · confirmed {c['confirmed']} · unknown {c['unknown']}")
     print("  A gate states what its consumer will do; only a delivery check reports "
           "whether it happened.")
@@ -791,8 +843,9 @@ def cmd_doctor(a, conn, *, open_blocker: str | None = None) -> int:
                 print(f"integrity   {g['id']} ({g['state']}) — bound ruling has "
                       "no ruling-time digest")
                 problems += 1
+            expected, _basis = core.binding_basis(g)
             ok, sentence = core.verify_binding(
-                g["binding_kind"], g["binding_locator"], g["binding_sha256"])
+                g["binding_kind"], g["binding_locator"], expected)
             if ok is False:
                 drifted += 1
                 print(f"drift       {g['id']} ({g['state']}) — bound artifact no longer matches")
@@ -828,7 +881,8 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--decay", required=True, help="what worsens while this waits")
     r.add_argument("--consumer", required=True, help="who acts on the answer, and how")
     r.add_argument("--decay-check", help="re-runnable command; exit 0 = decay occurred")
-    r.add_argument("--delivery-check", help="for resource gates: did the thing land")
+    r.add_argument("--delivery-check",
+                   help="post-approval check: did the consumer's promised effect land")
     r.add_argument("--horizon", help="ISO date it expires; omit rather than invent one")
     r.add_argument("--bind-kind", choices=("file", "git", "text"))
     r.add_argument("--bind", help="file path | <repo>@<rev> | inline text")

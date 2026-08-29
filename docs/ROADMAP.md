@@ -66,8 +66,10 @@ write.
   slack demotes a gate, while absence of evidence does not promote it to safe.
   When the queue outgrows one screen the board says how many it hid and why,
   because a board that silently drops rows is the surface it replaces.
-- ~~The board surfaces approved resource gates whose delivery check still
-  fails, under their own heading~~ (ADR 0001) — **PROMISED, NOT DELIVERED**.
+- ~~The board surfaces approved gates whose delivery check still fails, under
+  their own heading~~ (ADR 0001) — **PROMISED, NOT DELIVERED**. The resource
+  case forced the field; live authority-gate adoption proved the delivery gap
+  is about consumer effects rather than gate kind.
   Shipped late: the first build of the board omitted it, which is exactly the
   gap ADR 0001 wrote the section to close. An approved gate with no delivery
   check at all is counted in a sentence rather than listed, because a row
@@ -111,7 +113,9 @@ Two measures needed a judgment call rather than a query:
 - **"The share of gates whose consumer actually acted"** cannot be taken
   directly — nothing records that a consumer acted. The only observable proxy is
   a delivery check, so the number is split into measurable, confirmed, and
-  unknown, and *unknown is never counted as acted*.
+  unknown among approved gates, and *unknown is never counted as acted*. A
+  superseded gate with a delivery check is not eligible: nobody approved its
+  consumer action.
 - **A supersede is not a ruling.** Counting "the world moved past it" as a
   decision would report a fleet that rules on everything. Half of the first
   ledger's closures were supersedes; that is the finding, and averaging it away
