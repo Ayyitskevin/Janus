@@ -54,7 +54,9 @@ The implementation is a deep module behind that interface:
    new coherent SQLite snapshot; any intervening gate, ruling, observation, or
    audit row makes the preparation stale and refuses rollout;
 3. install candidate and rollback wheels with `--no-index --no-deps` into new,
-   commit-addressed environments before entering maintenance;
+   commit-addressed environments before entering maintenance, or reuse the
+   exact installed rollback environment when its private marker and
+   commit-addressed path match installed provenance;
 4. acquire the rollout lock, redirect the ordinary active-environment path to a
    fail-closed maintenance environment, and refuse while any process still has
    the database family open;
@@ -86,6 +88,14 @@ The first rollout may encounter a real directory at the active path rather
 than a symbolic link. It preserves that environment under a private legacy
 path before creating the activation seam. Later candidate/rollback switches
 are single-entry atomic symlink replacement.
+
+A later preparation can rebuild the installed commit into a byte-different
+wheel because Python distribution archives are not guaranteed reproducible.
+That rebuild remains the isolated rollback-reader rehearsal artifact. If the
+active path already names a validated commit-addressed release, rollout reuses
+that exact environment and carries its marker digest into the crash journal and
+receipt; it does not reject or replace known-good installed code merely because
+the rehearsal rebuild has a different archive digest.
 
 The receipt records only observed effects and exact identities. Its semantics
 state that authority is external to Janus and that the receipt is not
