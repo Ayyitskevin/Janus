@@ -80,6 +80,13 @@ def test_installed_cli_preserves_the_evidence_not_authority_boundary(tmp_path: P
     assert gates[0]["raised_by"] == "tester+codex"
     assert not marker.exists(), "listing gates executed stored command text"
 
+    default_board = run()
+    explicit_board = run("board")
+    assert default_board == explicit_board
+    assert gate_id in default_board
+    assert "Reading this board is not authority to act." in default_board
+    assert not marker.exists(), "the default board executed stored command text"
+
     before = run("show", gate_id)
     assert "current raise-time bytes match" in before
     assert not marker.exists(), "showing an open gate executed stored command text"

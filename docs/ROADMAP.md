@@ -70,6 +70,9 @@ write.
   the replacement is observed.
   When the queue outgrows one screen the board says how many it hid and why,
   because a board that silently drops rows is the surface it replaces.
+  A bare `janus` invocation now reaches this same board implementation; the
+  explicit `janus board` spelling remains available. This removes one command
+  from the cheapest operator path without claiming the operator has adopted it.
 - ~~The board surfaces approved gates whose delivery check still fails, under
   their own heading~~ (ADR 0001) — **PROMISED, NOT DELIVERED**. The resource
   case forced the field; live authority-gate adoption proved the delivery gap
