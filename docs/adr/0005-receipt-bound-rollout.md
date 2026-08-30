@@ -55,9 +55,11 @@ The implementation is a deep module behind that interface:
 7. atomically repoint the active environment to the candidate, atomically write
    the installed provenance record, and publish a closed
    `janus.rollout-receipt.v1` receipt;
-8. restore the prior active environment and provenance record on handled
-   failure. A durable in-progress journal makes crash recovery explicit rather
-   than guessing which step ran.
+8. record the exact prior active environment and its filesystem identity in the
+   durable journal before the first rename or symlink replacement, then restore
+   that environment and provenance record on handled failure. The switch
+   revalidates the recorded identity immediately before mutation, so crash
+   recovery is explicit rather than guessing which path moved.
 
 The first rollout may encounter a real directory at the active path rather
 than a symbolic link. It preserves that environment under a private legacy

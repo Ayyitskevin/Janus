@@ -26,6 +26,9 @@ a later working directory.
 `steps` is an ordered list of completed effects. A successful document must
 contain every required step. A handled failure does not publish a success
 receipt; it leaves a private in-progress journal until restoration is verified.
+Before maintenance mutates the active path, that journal durably records the
+prior path kind, symlink target or reserved legacy path, and filesystem identity.
+The switch refuses if the active path no longer has that identity.
 
 ## Freshness and timing
 

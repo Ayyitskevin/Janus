@@ -557,10 +557,62 @@ def _switch_symlink(active: Path, target: Path) -> None:
         raise
 
 
-def _enter_maintenance(active: Path, maintenance: Path, legacy_root: Path, rollback: str) -> dict:
+def _plan_maintenance(active: Path, legacy_root: Path, rollback: str) -> dict:
     info = active.lstat()
     if stat.S_ISLNK(info.st_mode):
-        previous = {"kind": "symlink", "target": os.readlink(active), "legacy": None}
+        return {
+            "kind": "symlink",
+            "target": os.readlink(active),
+            "legacy": None,
+            "device": info.st_dev,
+            "inode": info.st_ino,
+        }
+    if not stat.S_ISDIR(info.st_mode):
+        raise RolloutError("active environment changed type before maintenance")
+    legacy = legacy_root / f"{rollback}-{_now().replace(':', '').replace('-', '')}"
+    if legacy.exists() or legacy.is_symlink():
+        raise RolloutError(f"legacy preservation path already exists: {legacy}")
+    return {
+        "kind": "directory",
+        "target": None,
+        "legacy": str(legacy),
+        "device": info.st_dev,
+        "inode": info.st_ino,
+    }
+
+
+def _require_active_matches_plan(active: Path, previous: dict) -> None:
+    try:
+        info = active.lstat()
+    except OSError as exc:
+        raise RolloutError(f"active environment changed before maintenance: {exc}") from exc
+    if (info.st_dev, info.st_ino) != (previous["device"], previous["inode"]):
+        raise RolloutError("active environment changed after recovery state was recorded")
+    if previous["kind"] == "symlink":
+        if not stat.S_ISLNK(info.st_mode) or os.readlink(active) != previous["target"]:
+            raise RolloutError("active environment changed after recovery state was recorded")
+        return
+    if previous["kind"] != "directory" or not stat.S_ISDIR(info.st_mode):
+        raise RolloutError("active environment changed after recovery state was recorded")
+
+
+def _active_matches_previous(active: Path, previous: dict) -> bool:
+    try:
+        info = active.lstat()
+    except OSError:
+        return False
+    if previous["kind"] == "symlink":
+        return stat.S_ISLNK(info.st_mode) and os.readlink(active) == previous["target"]
+    return (
+        previous["kind"] == "directory"
+        and stat.S_ISDIR(info.st_mode)
+        and (info.st_dev, info.st_ino) == (previous["device"], previous["inode"])
+    )
+
+
+def _enter_maintenance(active: Path, maintenance: Path, previous: dict) -> None:
+    _require_active_matches_plan(active, previous)
+    if previous["kind"] == "symlink":
         try:
             _switch_symlink(active, maintenance)
         except BaseException as primary:
@@ -571,10 +623,8 @@ def _enter_maintenance(active: Path, maintenance: Path, legacy_root: Path, rollb
                     f"{primary}; failed to restore prior active symlink: {recovery}"
                 ) from primary
             raise
-        return previous
-    if not stat.S_ISDIR(info.st_mode):
-        raise RolloutError("active environment changed type before maintenance")
-    legacy = legacy_root / f"{rollback}-{_now().replace(':', '').replace('-', '')}"
+        return
+    legacy = Path(previous["legacy"])
     if legacy.exists() or legacy.is_symlink():
         raise RolloutError(f"legacy preservation path already exists: {legacy}")
     temporary = active.parent / f".{active.name}.switch-{uuid.uuid4().hex}"
@@ -601,15 +651,11 @@ def _enter_maintenance(active: Path, maintenance: Path, legacy_root: Path, rollb
                     f"{primary}; failed to restore legacy active environment: {recovery}"
                 ) from primary
         raise
-    return {"kind": "directory", "target": None, "legacy": str(legacy)}
 
 
 def _restore_active(active: Path, previous: dict) -> None:
     if previous["kind"] == "symlink":
-        target = Path(previous["target"])
-        if not target.is_absolute():
-            target = active.parent / target
-        _switch_symlink(active, target)
+        _switch_symlink(active, Path(previous["target"]))
         return
     legacy = Path(previous["legacy"])
     if active.is_symlink():
@@ -746,6 +792,7 @@ def apply_upgrade(
     install_root.chmod(PRIVATE_DIRECTORY_MODE)
     journal = install_root / "ROLLOUT_IN_PROGRESS.json"
     previous: dict | None = None
+    maintenance_entered = False
     installed_changed = False
     completed = False
     receipt_path: Path | None = None
@@ -775,6 +822,7 @@ def apply_upgrade(
         )
         maintenance = _maintenance_environment(install_root)
         try:
+            previous = _plan_maintenance(active, legacy, rollback)
             journal_document = {
                 "schema": "janus.rollout-in-progress.v1",
                 "candidate_commit": candidate,
@@ -782,10 +830,11 @@ def apply_upgrade(
                 "active_environment": str(active),
                 "started_at": _now(),
                 "step": "entering_maintenance",
+                "previous": previous,
             }
             _atomic_json(journal, journal_document)
-            previous = _enter_maintenance(active, maintenance, legacy, rollback)
-            journal_document["previous"] = previous
+            _enter_maintenance(active, maintenance, previous)
+            maintenance_entered = True
             journal_document["step"] = "maintenance"
             _atomic_json(journal, journal_document)
             holders = _open_database_holders(db)
@@ -918,7 +967,7 @@ def apply_upgrade(
             return receipt_path
         except BaseException as primary:
             recovery_error: BaseException | None = None
-            if previous is not None:
+            if previous is not None and maintenance_entered:
                 try:
                     _restore_active(active, previous)
                     if installed_changed:
@@ -929,19 +978,14 @@ def apply_upgrade(
                         )
                 except BaseException as exc:
                     recovery_error = exc
-            else:
+            elif previous is not None:
                 try:
-                    active_missing = not active.exists() and not active.is_symlink()
-                    active_is_maintenance = (
-                        active.is_symlink()
-                        and active.resolve(strict=False) == maintenance
-                    )
+                    prior_state_is_intact = _active_matches_previous(active, previous)
                 except OSError:
-                    active_missing = True
-                    active_is_maintenance = False
-                if active_missing or active_is_maintenance:
+                    prior_state_is_intact = False
+                if not prior_state_is_intact:
                     recovery_error = RolloutError(
-                        "active environment changed before its prior state was recorded"
+                        "active environment changed after its prior state was recorded"
                     )
             if receipt_attempted and receipt_path is not None:
                 try:
