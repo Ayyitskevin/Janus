@@ -1,0 +1,229 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Ayyitskevin/Janus/blob/main/docs/spec/rollout-in-progress-v1.schema.json",
+  "title": "Janus rollout recovery journal v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "started_at",
+    "step",
+    "source",
+    "preparation",
+    "target",
+    "candidate",
+    "rollback",
+    "previous",
+    "installed_record_before",
+    "installed_record_after",
+    "receipt"
+  ],
+  "properties": {
+    "schema": { "const": "janus.rollout-in-progress.v1" },
+    "started_at": { "$ref": "#/$defs/timestamp" },
+    "step": {
+      "enum": [
+        "entering_maintenance",
+        "maintenance",
+        "migrating",
+        "activating",
+        "candidate_active",
+        "publishing_receipt"
+      ]
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "commit"],
+      "properties": {
+        "repository": { "$ref": "#/$defs/absolutePath" },
+        "commit": { "$ref": "#/$defs/commit" }
+      }
+    },
+    "preparation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bundle",
+        "manifest_sha256",
+        "database_backup",
+        "database_backup_sha256"
+      ],
+      "properties": {
+        "bundle": { "$ref": "#/$defs/absolutePath" },
+        "manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "database_backup": { "$ref": "#/$defs/absolutePath" },
+        "database_backup_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "database",
+        "install_root",
+        "active_environment",
+        "wrapper",
+        "installed_record",
+        "maintenance_environment"
+      ],
+      "properties": {
+        "database": { "$ref": "#/$defs/absolutePath" },
+        "install_root": { "$ref": "#/$defs/absolutePath" },
+        "active_environment": { "$ref": "#/$defs/absolutePath" },
+        "wrapper": { "$ref": "#/$defs/absolutePath" },
+        "installed_record": { "$ref": "#/$defs/absolutePath" },
+        "maintenance_environment": { "$ref": "#/$defs/absolutePath" }
+      }
+    },
+    "candidate": { "$ref": "#/$defs/release" },
+    "rollback": { "$ref": "#/$defs/release" },
+    "previous": {
+      "oneOf": [
+        { "$ref": "#/$defs/previousSymlink" },
+        { "$ref": "#/$defs/previousDirectory" }
+      ]
+    },
+    "installed_record_before": { "$ref": "#/$defs/fileRecord" },
+    "installed_record_after": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/fileRecord" }
+      ]
+    },
+    "receipt": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "sha256"],
+          "properties": {
+            "path": { "$ref": "#/$defs/absolutePath" },
+            "sha256": { "$ref": "#/$defs/sha256" }
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["step"],
+        "properties": {
+          "step": {
+            "enum": ["activating", "candidate_active", "publishing_receipt"]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "installed_record_after": { "$ref": "#/$defs/fileRecord" }
+        }
+      },
+      "else": {
+        "properties": { "installed_record_after": { "type": "null" } }
+      }
+    },
+    {
+      "if": {
+        "required": ["step"],
+        "properties": { "step": { "const": "publishing_receipt" } }
+      },
+      "then": {
+        "properties": {
+          "receipt": {
+            "type": "object",
+            "required": ["path", "sha256"]
+          }
+        }
+      },
+      "else": {
+        "properties": { "receipt": { "type": "null" } }
+      }
+    }
+  ],
+  "$defs": {
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "absolutePath": { "type": "string", "pattern": "^/" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "environment", "wheel_sha256"],
+      "properties": {
+        "commit": { "$ref": "#/$defs/commit" },
+        "environment": { "$ref": "#/$defs/absolutePath" },
+        "wheel_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "previousBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "target", "legacy", "device", "inode"],
+      "properties": {
+        "kind": { "enum": ["symlink", "directory"] },
+        "target": {
+          "oneOf": [
+            { "type": "string", "minLength": 1 },
+            { "type": "null" }
+          ]
+        },
+        "legacy": {
+          "oneOf": [
+            { "$ref": "#/$defs/absolutePath" },
+            { "type": "null" }
+          ]
+        },
+        "device": { "type": "integer", "minimum": 0 },
+        "inode": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "previousSymlink": {
+      "allOf": [
+        { "$ref": "#/$defs/previousBase" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "symlink" },
+            "target": { "type": "string", "minLength": 1 },
+            "legacy": { "type": "null" }
+          }
+        }
+      ]
+    },
+    "previousDirectory": {
+      "allOf": [
+        { "$ref": "#/$defs/previousBase" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "directory" },
+            "target": { "type": "null" },
+            "legacy": { "$ref": "#/$defs/absolutePath" }
+          }
+        }
+      ]
+    },
+    "fileRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["content_base64", "mode", "path", "sha256"],
+      "properties": {
+        "content_base64": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 131072,
+          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+        },
+        "mode": { "type": "string", "pattern": "^[0-7]{4}$" },
+        "path": { "$ref": "#/$defs/absolutePath" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}
