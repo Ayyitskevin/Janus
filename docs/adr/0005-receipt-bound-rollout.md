@@ -3,6 +3,7 @@
 - **Status:** Accepted (2026-08-29; implementation merged as `07d5f3a`, then recovery
   hardening merged as `9342308`)
 - **Date:** 2026-08-29
+- **Amended:** 2026-08-30 (self-rollout authority and freshness ordering clarified)
 - **Deciders:** Codex design; human review required by `AGENTS.md`
 - **Depends on:** ADR 0004 and `janus.upgrade-preparation.v1`
 - **Supersedes:** the host-only branch-based `janus-update` publisher after a
@@ -34,6 +35,15 @@ accepts an absolute preparation bundle, live database, install root, and active
 environment path. Its default mode is preflight. Mutation requires an explicit
 `apply` subcommand plus `--yes`; that confirmation acknowledges effects but is
 not an authorization mechanism.
+
+For Janus's own rollout, authority and freshness remain separate. External
+human authorization may follow inspection of the prepared packet when that
+authorization does not write the ledger. If the decision is mirrored into
+Janus, its gate or ruling is recorded before the final preparation, or the
+bundle is prepared again afterward. Recording it after preparation changes the
+live snapshot and must make preflight refuse the prior bundle. The rollout code
+never queries Janus for permission, so neither a ruling nor a fresh bundle can
+authorize the operation by itself.
 
 The implementation is a deep module behind that interface:
 

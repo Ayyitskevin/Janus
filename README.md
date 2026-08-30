@@ -155,6 +155,14 @@ bundle stale; prepare a new one instead of treating an old backup as authority.
 The Python environment running this repository script must include the declared
 test toolchain, and `lsof` is required for the mutating command.
 
+For Janus's own rollout, keep authority and freshness separate. External human
+authorization may follow inspection of the prepared packet as long as it does
+not write the ledger. If the decision is also recorded in Janus, record it
+before the final preparation or create a fresh bundle afterward. A later gate,
+ruling, observation, or check revision intentionally makes the prior bundle
+stale. Run preflight immediately before apply; the rollout command never reads
+Janus as its own permission source.
+
 Actual rollout remains a human-reviewed maintenance operation. After reviewing
 the displayed identities and effects, the operator invokes the same command as
 `apply --yes`. `--yes` only confirms those displayed effects; authorization is

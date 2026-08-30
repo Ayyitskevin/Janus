@@ -388,6 +388,27 @@ def test_preflight_refuses_a_live_ledger_that_advanced_after_preparation(
     assert not (case["install_root"] / "releases").exists()
 
 
+def test_preflight_refuses_a_ruling_recorded_after_preparation(prepared_template, tmp_path):
+    case = _case(prepared_template, tmp_path)
+    with sqlite3.connect(case["db"]) as connection:
+        connection.row_factory = sqlite3.Row
+        gate_id = connection.execute("SELECT id FROM gates ORDER BY raised_at LIMIT 1").fetchone()[
+            "id"
+        ]
+        core.close_gate(
+            connection,
+            gate_id,
+            state="approved",
+            reason="the operator approved after the backup was prepared",
+            actor="owner",
+        )
+
+    with pytest.raises(apply_upgrade.RolloutError, match="changed after preparation"):
+        _preflight(case)
+
+    assert not (case["install_root"] / "releases").exists()
+
+
 def test_preflight_refuses_tampered_artifacts_and_wrong_installed_provenance(
     prepared_template, tmp_path
 ):
