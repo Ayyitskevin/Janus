@@ -65,6 +65,16 @@ entry point and provenance. The coherent database backup is retained but never
 restored automatically, because that could delete legitimate decisions written
 after it was taken.
 
+Crash recovery treats the journal as untrusted local input. The repository
+accepts only the closed journal schema from the exact clean candidate checkout,
+then constrains every mutable pathname to its fixed install-root location,
+checks release markers and the preserved directory inode, and compares the live
+`INSTALLED` bytes and mode with the two journaled states. A recorded receipt is
+opened only as a direct child of the private receipts directory and must match
+both its journaled digest and the closed receipt schema. An invalid or unknown
+state remains in maintenance for inspection; recovery never guesses, follows a
+journal path outside the install root for mutation, or restores database bytes.
+
 This is inherited, not chosen, and it is why Janus must never enter the
 permission path. A system that treats a Janus read as sufficient grounds to act
 would be trusting a store that a same-OS-user process can rewrite.

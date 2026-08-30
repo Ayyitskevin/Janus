@@ -4,7 +4,8 @@
 The default ``preflight`` subcommand is logically read-only. ``apply`` is a
 human-gated maintenance operation: it consumes exact local artifacts, proves
 the prepared snapshot is still current, stages both code directions, migrates,
-and only then changes the active installed environment.
+and only then changes the active installed environment. ``recover`` reconciles
+an exact crash journal without ever restoring the database automatically.
 """
 
 from __future__ import annotations
@@ -26,14 +27,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from jsonschema import Draft202012Validator
-from jsonschema.exceptions import ValidationError
+from jsonschema.exceptions import SchemaError, ValidationError
 
 import prepare_upgrade
 
 RECEIPT_SCHEMA = "janus.rollout-receipt.v1"
+JOURNAL_SCHEMA = "janus.rollout-in-progress.v1"
 PRIVATE_DIRECTORY_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
 EXECUTABLE_FILE_MODE = 0o700
+MAX_RECOVERY_DOCUMENT_BYTES = 1024 * 1024
 COMPLETED_STEPS = [
     "validated_preparation",
     "matched_live_snapshot",
@@ -174,7 +177,7 @@ def _validate_json(document: dict, schema: dict, *, label: str) -> None:
     try:
         Draft202012Validator.check_schema(schema)
         Draft202012Validator(schema).validate(document)
-    except ValidationError as exc:
+    except (SchemaError, ValidationError) as exc:
         location = ".".join(str(part) for part in exc.absolute_path) or "<root>"
         raise RolloutError(f"{label} is invalid at {location}: {exc.message}") from exc
 
@@ -532,19 +535,42 @@ def _maintenance_environment(install_root: Path) -> Path:
             label="maintenance refusal",
             expected_mode=EXECUTABLE_FILE_MODE,
         )
-        if "rollout maintenance in progress" not in binary.read_text():
+        if binary.read_bytes() != _maintenance_refusal_content():
             raise RolloutError("existing maintenance environment has unexpected content")
         return maintenance
     prepare_upgrade._private_directory(maintenance)
     binary = maintenance / "bin"
     prepare_upgrade._private_directory(binary)
-    message = (
+    _atomic_private_file(
+        binary / "janus",
+        _maintenance_refusal_content(),
+        mode=EXECUTABLE_FILE_MODE,
+    )
+    return maintenance
+
+
+def _maintenance_refusal_content() -> bytes:
+    return (
         "#!/bin/sh\n"
         "echo 'janus: rollout maintenance in progress; no command was run' >&2\n"
         "exit 75\n"
     ).encode()
-    _atomic_private_file(binary / "janus", message, mode=EXECUTABLE_FILE_MODE)
-    return maintenance
+
+
+def _validate_maintenance_environment(maintenance: Path) -> None:
+    _safe_private_directory(maintenance, label="maintenance environment")
+    binary = maintenance / "bin" / "janus"
+    _safe_owned_file(
+        binary,
+        label="maintenance refusal",
+        expected_mode=EXECUTABLE_FILE_MODE,
+    )
+    try:
+        content = binary.read_bytes()
+    except OSError as exc:
+        raise RolloutError(f"cannot read maintenance refusal: {binary}: {exc}") from exc
+    if content != _maintenance_refusal_content():
+        raise RolloutError("maintenance environment has unexpected content")
 
 
 def _switch_symlink(active: Path, target: Path) -> None:
@@ -618,7 +644,11 @@ def _enter_maintenance(active: Path, maintenance: Path, previous: dict) -> None:
             _switch_symlink(active, maintenance)
         except BaseException as primary:
             try:
-                _restore_active(active, previous)
+                _restore_active(
+                    active,
+                    previous,
+                    allowed_current_targets=(maintenance,),
+                )
             except BaseException as recovery:
                 raise RolloutError(
                     f"{primary}; failed to restore prior active symlink: {recovery}"
@@ -654,12 +684,49 @@ def _enter_maintenance(active: Path, maintenance: Path, previous: dict) -> None:
         raise
 
 
-def _restore_active(active: Path, previous: dict) -> None:
+def _active_points_to(active: Path, target: Path) -> bool:
+    try:
+        return active.is_symlink() and active.resolve(strict=True) == target
+    except OSError:
+        return False
+
+
+def _require_legacy_identity(previous: dict) -> Path:
+    legacy = Path(previous["legacy"])
+    try:
+        info = legacy.lstat()
+    except OSError as exc:
+        raise RolloutError(f"cannot inspect preserved legacy environment: {legacy}: {exc}") from exc
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or stat.S_ISLNK(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or (info.st_dev, info.st_ino) != (previous["device"], previous["inode"])
+    ):
+        raise RolloutError("preserved legacy environment identity does not match the journal")
+    return legacy
+
+
+def _restore_active(
+    active: Path,
+    previous: dict,
+    *,
+    allowed_current_targets: tuple[Path, ...] = (),
+) -> None:
+    if _active_matches_previous(active, previous):
+        return
+    current_is_expected = any(
+        _active_points_to(active, target) for target in allowed_current_targets
+    )
     if previous["kind"] == "symlink":
+        if not current_is_expected:
+            raise RolloutError("cannot restore prior symlink over an unexpected active path")
         _switch_symlink(active, Path(previous["target"]))
         return
-    legacy = Path(previous["legacy"])
+    legacy = _require_legacy_identity(previous)
     if active.is_symlink():
+        if not current_is_expected:
+            raise RolloutError("cannot restore legacy environment over an unexpected symlink")
         active.unlink()
     elif active.exists():
         raise RolloutError("cannot restore legacy environment over an unexpected active path")
@@ -668,20 +735,25 @@ def _restore_active(active: Path, previous: dict) -> None:
 
 
 @contextmanager
-def _rollout_lock(install_root: Path):
+def _rollout_lock(install_root: Path, *, create: bool = True):
     path = install_root / "rollout.lock"
+    flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    if create:
+        flags |= os.O_CREAT
     try:
-        descriptor = os.open(
-            path,
-            os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
-            PRIVATE_FILE_MODE,
-        )
+        descriptor = os.open(path, flags, PRIVATE_FILE_MODE)
     except OSError as exc:
         raise RolloutError(f"cannot open rollout lock safely: {path}: {exc}") from exc
     try:
-        os.fchmod(descriptor, PRIVATE_FILE_MODE)
+        if create:
+            os.fchmod(descriptor, PRIVATE_FILE_MODE)
         info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1:
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) != PRIVATE_FILE_MODE
+        ):
             raise RolloutError(f"unsafe rollout lock: {path}")
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -746,8 +818,11 @@ def _verify_environment(environment: Path, code: str, db: Path, *, label: str) -
 def _atomic_json(path: Path, document: dict, schema: dict | None = None) -> None:
     if schema is not None:
         _validate_json(document, schema, label="rollout receipt")
-    content = (json.dumps(document, indent=2, sort_keys=True) + "\n").encode()
-    _atomic_private_file(path, content)
+    _atomic_private_file(path, _json_bytes(document))
+
+
+def _json_bytes(document: dict) -> bytes:
+    return (json.dumps(document, indent=2, sort_keys=True) + "\n").encode()
 
 
 def _installed_content(
@@ -779,7 +854,7 @@ def _installed_recovery_record(path: Path, content: bytes, mode: int) -> dict[st
     }
 
 
-def _restore_installed_record(record: dict, *, expected_path: Path) -> None:
+def _decode_recovery_record(record: dict, *, expected_path: Path) -> tuple[bytes, int]:
     if record.get("path") != str(expected_path):
         raise RolloutError("installed recovery record targets an unexpected path")
     encoded = record.get("content_base64")
@@ -798,7 +873,411 @@ def _restore_installed_record(record: dict, *, expected_path: Path) -> None:
         raise RolloutError("installed recovery record has an invalid mode") from exc
     if mode_text != f"{mode:04o}" or mode & ~0o777:
         raise RolloutError("installed recovery record has an invalid mode")
+    return content, mode
+
+
+def _restore_installed_record(record: dict, *, expected_path: Path) -> None:
+    content, mode = _decode_recovery_record(record, expected_path=expected_path)
     _atomic_private_file(expected_path, content, mode=mode)
+
+
+def _write_journal(path: Path, document: dict, repo: Path) -> None:
+    _validate_json(
+        document,
+        _schema(repo, "docs/spec/rollout-in-progress-v1.schema.json"),
+        label="rollout recovery journal",
+    )
+    _atomic_json(path, document)
+
+
+def _journal_path(install_root: Path) -> Path:
+    return install_root / "ROLLOUT_IN_PROGRESS.json"
+
+
+def _journal_bound_path(value: str, *, label: str) -> Path:
+    return _require_absolute(Path(value), label)
+
+
+def _validate_recovery_paths(install_root: Path, active: Path) -> None:
+    _require_absolute(install_root, "--install-root")
+    _require_absolute(active, "--active")
+    if active.parent != install_root:
+        raise RolloutError("--active must be a direct child of --install-root")
+    _safe_private_directory(install_root, label="install root")
+
+
+def _validate_journal_release(
+    record: dict,
+    *,
+    expected_path: Path,
+    label: str,
+) -> Path:
+    environment = _journal_bound_path(record["environment"], label=f"journal {label}")
+    if environment != expected_path:
+        raise RolloutError(f"journal {label} environment is outside its commit path")
+    _safe_private_directory(environment, label=f"journal {label} environment")
+    expected_marker = {
+        "commit": record["commit"],
+        "wheel_sha256": record["wheel_sha256"],
+    }
+    if _release_marker(environment) != expected_marker:
+        raise RolloutError(f"journal {label} release marker does not match")
+    return environment
+
+
+def _installed_record_state(path: Path, before: dict, after: dict | None) -> str:
+    _safe_owned_file(
+        path,
+        label="installed provenance record",
+        allow_private_group=True,
+    )
+    content = path.read_bytes()
+    mode = stat.S_IMODE(path.lstat().st_mode)
+    before_content, before_mode = _decode_recovery_record(before, expected_path=path)
+    if content == before_content and mode == before_mode:
+        return "before"
+    if after is not None:
+        after_content, after_mode = _decode_recovery_record(after, expected_path=path)
+        if content == after_content and mode == after_mode:
+            return "after"
+    raise RolloutError("installed provenance does not match either journaled state")
+
+
+def _active_recovery_state(
+    active: Path,
+    previous: dict,
+    *,
+    maintenance: Path,
+    candidate: Path,
+) -> str:
+    if _active_matches_previous(active, previous):
+        return "previous"
+    if _active_points_to(active, maintenance):
+        return "maintenance"
+    if _active_points_to(active, candidate):
+        return "candidate"
+    if not active.exists() and not active.is_symlink() and previous["kind"] == "directory":
+        return "missing_after_legacy_move"
+    raise RolloutError("active environment does not match a journaled recovery state")
+
+
+def _validate_previous_state(
+    previous: dict,
+    *,
+    active: Path,
+    active_state: str,
+    rollback_environment: Path,
+    legacy_root: Path,
+) -> None:
+    if previous["kind"] == "symlink":
+        if previous["legacy"] is not None:
+            raise RolloutError("symlink recovery state unexpectedly names a legacy path")
+        raw_target = Path(previous["target"])
+        resolved = raw_target if raw_target.is_absolute() else active.parent / raw_target
+        try:
+            resolved = resolved.resolve(strict=True)
+        except OSError as exc:
+            raise RolloutError(f"cannot resolve prior active symlink: {exc}") from exc
+        if resolved != rollback_environment:
+            raise RolloutError("prior active symlink does not resolve to the rollback release")
+        return
+
+    legacy = _journal_bound_path(previous["legacy"], label="journal previous.legacy")
+    if legacy.parent != legacy_root:
+        raise RolloutError("journal legacy environment is outside the legacy directory")
+    if active_state == "previous":
+        if legacy.exists() or legacy.is_symlink():
+            raise RolloutError("legacy path exists while the original active directory is live")
+        return
+    _require_legacy_identity(previous)
+
+
+def _validate_recovery_receipt(
+    record: dict | None,
+    *,
+    journal: dict,
+    receipts: Path,
+    repo: Path,
+) -> tuple[str, Path | None]:
+    if record is None:
+        return "absent", None
+    path = _journal_bound_path(record["path"], label="journal receipt.path")
+    if path.parent != receipts:
+        raise RolloutError("journal receipt path is outside the receipts directory")
+    if not path.exists() and not path.is_symlink():
+        return "absent", path
+    _safe_owned_file(
+        path,
+        label="recorded rollout receipt",
+        expected_mode=PRIVATE_FILE_MODE,
+    )
+    if path.stat().st_size > MAX_RECOVERY_DOCUMENT_BYTES:
+        raise RolloutError("recorded rollout receipt exceeds the size limit")
+    content = path.read_bytes()
+    if hashlib.sha256(content).hexdigest() != record["sha256"]:
+        raise RolloutError("recorded rollout receipt digest does not match the journal")
+    try:
+        receipt = json.loads(content)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RolloutError(f"recorded rollout receipt is invalid JSON: {exc}") from exc
+    _validate_json(
+        receipt,
+        _schema(repo, "docs/spec/rollout-receipt-v1.schema.json"),
+        label="recorded rollout receipt",
+    )
+    target = journal["target"]
+    preparation = journal["preparation"]
+    expected = {
+        "bundle": preparation["bundle"],
+        "candidate_commit": journal["candidate"]["commit"],
+        "rollback_commit": journal["rollback"]["commit"],
+        "manifest_sha256": preparation["manifest_sha256"],
+        "backup_sha256": preparation["database_backup_sha256"],
+    }
+    if any(receipt["preparation"][key] != value for key, value in expected.items()):
+        raise RolloutError("recorded rollout receipt preparation identity does not match")
+    for key in ("database", "install_root", "active_environment", "wrapper"):
+        if receipt["target"][key] != target[key]:
+            raise RolloutError("recorded rollout receipt target identity does not match")
+    if receipt["releases"]["candidate"] != journal["candidate"]:
+        raise RolloutError("recorded rollout receipt candidate release does not match")
+    if receipt["releases"]["rollback"] != journal["rollback"]:
+        raise RolloutError("recorded rollout receipt rollback release does not match")
+    if receipt["releases"]["legacy_environment"] != journal["previous"]["legacy"]:
+        raise RolloutError("recorded rollout receipt legacy environment does not match")
+    if receipt["rollback"]["database_backup"] != preparation["database_backup"]:
+        raise RolloutError("recorded rollout receipt database backup does not match")
+    if receipt["before"]["installed_commit"] != journal["rollback"]["commit"]:
+        raise RolloutError("recorded rollout receipt prior commit does not match")
+    if receipt["after"]["installed_commit"] != journal["candidate"]["commit"]:
+        raise RolloutError("recorded rollout receipt installed commit does not match")
+    return "valid", path
+
+
+def _load_recovery_state(
+    *,
+    install_root: Path,
+    active: Path,
+    repo: Path,
+) -> dict:
+    _validate_recovery_paths(install_root, active)
+    journal_path = _journal_path(install_root)
+    _safe_owned_file(
+        journal_path,
+        label="rollout recovery journal",
+        expected_mode=PRIVATE_FILE_MODE,
+    )
+    if journal_path.stat().st_size > MAX_RECOVERY_DOCUMENT_BYTES:
+        raise RolloutError("rollout recovery journal exceeds the size limit")
+    content = journal_path.read_bytes()
+    try:
+        journal = json.loads(content)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RolloutError(f"rollout recovery journal is invalid JSON: {exc}") from exc
+    _validate_json(
+        journal,
+        _schema(repo, "docs/spec/rollout-in-progress-v1.schema.json"),
+        label="rollout recovery journal",
+    )
+
+    _journal_bound_path(
+        journal["source"]["repository"], label="journal source.repository"
+    )
+    if journal["source"]["commit"] != journal["candidate"]["commit"]:
+        raise RolloutError("journal source commit does not match its candidate")
+    _validate_repository(repo, journal["source"]["commit"])
+
+    target = journal["target"]
+    expected_targets = {
+        "install_root": install_root,
+        "active_environment": active,
+        "installed_record": install_root / "INSTALLED",
+        "maintenance_environment": install_root / "maintenance",
+    }
+    for key, expected_path in expected_targets.items():
+        recorded_path = _journal_bound_path(target[key], label=f"journal target.{key}")
+        if recorded_path != expected_path:
+            raise RolloutError(f"journal target.{key} does not match the recovery target")
+    database = _journal_bound_path(target["database"], label="journal target.database")
+    wrapper = _journal_bound_path(target["wrapper"], label="journal target.wrapper")
+    _validate_wrapper(wrapper, active)
+
+    preparation = journal["preparation"]
+    for key in ("bundle", "database_backup"):
+        _journal_bound_path(preparation[key], label=f"journal preparation.{key}")
+
+    releases = install_root / "releases"
+    receipts = install_root / "receipts"
+    legacy = install_root / "legacy"
+    for directory in (releases, receipts, legacy):
+        _safe_private_directory(directory, label="rollout directory")
+    candidate = _validate_journal_release(
+        journal["candidate"],
+        expected_path=releases / journal["candidate"]["commit"],
+        label="candidate",
+    )
+    rollback = _validate_journal_release(
+        journal["rollback"],
+        expected_path=releases / journal["rollback"]["commit"],
+        label="rollback",
+    )
+    if candidate == rollback:
+        raise RolloutError("journal candidate and rollback releases are identical")
+    maintenance = install_root / "maintenance"
+    _validate_maintenance_environment(maintenance)
+
+    installed = install_root / "INSTALLED"
+    installed_state = _installed_record_state(
+        installed,
+        journal["installed_record_before"],
+        journal["installed_record_after"],
+    )
+    active_state = _active_recovery_state(
+        active,
+        journal["previous"],
+        maintenance=maintenance,
+        candidate=candidate,
+    )
+    _validate_previous_state(
+        journal["previous"],
+        active=active,
+        active_state=active_state,
+        rollback_environment=rollback,
+        legacy_root=legacy,
+    )
+    receipt_state, receipt_path = _validate_recovery_receipt(
+        journal["receipt"],
+        journal=journal,
+        receipts=receipts,
+        repo=repo,
+    )
+    if receipt_state == "valid":
+        if active_state != "candidate" or installed_state != "after":
+            raise RolloutError(
+                "success receipt exists but active code or installed provenance disagrees"
+            )
+        resolution = "complete_forward"
+        effects = ["remove the stale recovery journal"]
+    else:
+        resolution = "restore_prior_code"
+        effects = []
+        if active_state != "previous":
+            effects.append("restore the exact prior active environment")
+        if installed_state != "before":
+            effects.append("restore the exact prior installed provenance")
+        effects.append("remove the recovery journal after rechecking prior state")
+    return {
+        "journal": journal,
+        "journal_path": journal_path,
+        "journal_sha256": hashlib.sha256(content).hexdigest(),
+        "database": database,
+        "active": active,
+        "installed": installed,
+        "maintenance": maintenance,
+        "candidate": candidate,
+        "rollback": rollback,
+        "active_state": active_state,
+        "installed_state": installed_state,
+        "receipt_state": receipt_state,
+        "receipt_path": receipt_path,
+        "resolution": resolution,
+        "effects": effects,
+    }
+
+
+def _public_recovery_plan(state: dict) -> dict:
+    return {
+        "journal": str(state["journal_path"]),
+        "journal_sha256": state["journal_sha256"],
+        "step": state["journal"]["step"],
+        "database": str(state["database"]),
+        "active_state": state["active_state"],
+        "installed_state": state["installed_state"],
+        "receipt_state": state["receipt_state"],
+        "resolution": state["resolution"],
+        "effects": list(state["effects"]),
+        "database_restore_automatic": False,
+    }
+
+
+def inspect_recovery(*, install_root: Path, active: Path, repo: Path) -> dict:
+    _validate_recovery_paths(install_root, active)
+    with _rollout_lock(install_root, create=False):
+        return _public_recovery_plan(
+            _load_recovery_state(install_root=install_root, active=active, repo=repo)
+        )
+
+
+def recover_upgrade(
+    *,
+    install_root: Path,
+    active: Path,
+    repo: Path,
+    expected_journal_sha256: str,
+) -> dict:
+    _validate_recovery_paths(install_root, active)
+    with _rollout_lock(install_root, create=False):
+        state = _load_recovery_state(install_root=install_root, active=active, repo=repo)
+        if state["journal_sha256"] != expected_journal_sha256:
+            raise RolloutError("recovery journal changed after its effects were displayed")
+        if state["resolution"] == "restore_prior_code":
+            _restore_active(
+                active,
+                state["journal"]["previous"],
+                allowed_current_targets=(state["maintenance"], state["candidate"]),
+            )
+            if state["installed_state"] != "before":
+                _restore_installed_record(
+                    state["journal"]["installed_record_before"],
+                    expected_path=state["installed"],
+                )
+            if not _active_matches_previous(active, state["journal"]["previous"]):
+                raise RolloutError("prior active environment did not survive recovery")
+            if _installed_record_state(
+                state["installed"],
+                state["journal"]["installed_record_before"],
+                state["journal"]["installed_record_after"],
+            ) != "before":
+                raise RolloutError("prior installed provenance did not survive recovery")
+        final_state = _load_recovery_state(
+            install_root=install_root,
+            active=active,
+            repo=repo,
+        )
+        if final_state["journal_sha256"] != expected_journal_sha256:
+            raise RolloutError("recovery journal changed before reconciliation completed")
+        if state["resolution"] == "restore_prior_code" and (
+            final_state["active_state"] != "previous"
+            or final_state["installed_state"] != "before"
+        ):
+            raise RolloutError("prior code state changed before reconciliation completed")
+        if state["resolution"] == "complete_forward" and (
+            final_state["resolution"] != "complete_forward"
+        ):
+            raise RolloutError("completed rollout state changed before reconciliation completed")
+        state["journal_path"].unlink()
+        prepare_upgrade._fsync_directory(install_root)
+        result = _public_recovery_plan(state)
+        result["reconciled"] = True
+        return result
+
+
+def _remove_recorded_receipt_for_rollback(journal: dict) -> None:
+    record = journal.get("receipt")
+    if record is None:
+        return
+    path = Path(record["path"])
+    if not path.exists() and not path.is_symlink():
+        return
+    _safe_owned_file(
+        path,
+        label="recorded rollout receipt",
+        expected_mode=PRIVATE_FILE_MODE,
+    )
+    if _sha256(path) != record["sha256"]:
+        raise RolloutError("refusing to remove a receipt whose digest changed")
+    path.unlink()
+    prepare_upgrade._fsync_directory(path.parent)
 
 
 def apply_upgrade(
@@ -827,8 +1306,7 @@ def apply_upgrade(
     maintenance_entered = False
     installed_changed = False
     completed = False
-    receipt_path: Path | None = None
-    receipt_attempted = False
+    journal_document: dict | None = None
     with _rollout_lock(install_root):
         if journal.exists() or journal.is_symlink():
             raise RolloutError(
@@ -860,21 +1338,50 @@ def apply_upgrade(
                 initial["installed_bytes"],
                 initial["installed_mode"],
             )
+            candidate_record = {
+                "commit": candidate,
+                "environment": str(candidate_release),
+                "wheel_sha256": _wheel_digest(manifest, "candidate"),
+            }
+            rollback_record = {
+                "commit": rollback,
+                "environment": str(rollback_release),
+                "wheel_sha256": _wheel_digest(manifest, "rollback"),
+            }
             journal_document = {
-                "schema": "janus.rollout-in-progress.v1",
-                "candidate_commit": candidate,
-                "rollback_commit": rollback,
-                "active_environment": str(active),
+                "schema": JOURNAL_SCHEMA,
                 "started_at": _now(),
                 "step": "entering_maintenance",
+                "source": {
+                    "repository": str(repo),
+                    "commit": candidate,
+                },
+                "preparation": {
+                    "bundle": str(bundle),
+                    "manifest_sha256": initial["manifest_sha256"],
+                    "database_backup": str(initial["files"]["backup"]),
+                    "database_backup_sha256": manifest["backup"]["sha256"],
+                },
+                "target": {
+                    "database": str(db),
+                    "install_root": str(install_root),
+                    "active_environment": str(active),
+                    "wrapper": str(wrapper),
+                    "installed_record": str(install_root / "INSTALLED"),
+                    "maintenance_environment": str(maintenance),
+                },
+                "candidate": candidate_record,
+                "rollback": rollback_record,
                 "previous": previous,
                 "installed_record_before": installed_record_before,
+                "installed_record_after": None,
+                "receipt": None,
             }
-            _atomic_json(journal, journal_document)
+            _write_journal(journal, journal_document, repo)
             _enter_maintenance(active, maintenance, previous)
             maintenance_entered = True
             journal_document["step"] = "maintenance"
-            _atomic_json(journal, journal_document)
+            _write_journal(journal, journal_document, repo)
             holders = _open_database_holders(db)
             if holders:
                 raise RolloutError(
@@ -890,7 +1397,7 @@ def apply_upgrade(
             family_before = initial["family"]["before"]
             _repair_storage(db)
             journal_document["step"] = "migrating"
-            _atomic_json(journal, journal_document)
+            _write_journal(journal, journal_document, repo)
             candidate_result = _verify_environment(
                 candidate_release,
                 prepare_upgrade._verifier_code(),
@@ -925,9 +1432,6 @@ def apply_upgrade(
             ):
                 raise RolloutError("database family lost private mode after verification")
 
-            journal_document["step"] = "activating"
-            _atomic_json(journal, journal_document)
-            _switch_symlink(active, candidate_release)
             installed_content = _installed_content(
                 candidate=candidate,
                 candidate_release=candidate_release,
@@ -935,6 +1439,16 @@ def apply_upgrade(
                 rollback_release=rollback_release,
                 manifest_sha256=initial["manifest_sha256"],
             )
+            journal_document["installed_record_after"] = _installed_recovery_record(
+                install_root / "INSTALLED",
+                installed_content,
+                PRIVATE_FILE_MODE,
+            )
+            journal_document["step"] = "activating"
+            _write_journal(journal, journal_document, repo)
+            _switch_symlink(active, candidate_release)
+            journal_document["step"] = "candidate_active"
+            _write_journal(journal, journal_document, repo)
             installed_changed = True
             _atomic_private_file(install_root / "INSTALLED", installed_content)
             receipt = {
@@ -964,16 +1478,8 @@ def apply_upgrade(
                     "storage": family_after["after"],
                 },
                 "releases": {
-                    "candidate": {
-                        "commit": candidate,
-                        "environment": str(candidate_release),
-                        "wheel_sha256": _wheel_digest(manifest, "candidate"),
-                    },
-                    "rollback": {
-                        "commit": rollback,
-                        "environment": str(rollback_release),
-                        "wheel_sha256": _wheel_digest(manifest, "rollback"),
-                    },
+                    "candidate": candidate_record,
+                    "rollback": rollback_record,
                     "legacy_environment": previous["legacy"],
                 },
                 "steps": COMPLETED_STEPS,
@@ -993,7 +1499,13 @@ def apply_upgrade(
             receipt_path = receipts / receipt_name
             if receipt_path.exists() or receipt_path.is_symlink():
                 raise RolloutError(f"rollout receipt path already exists: {receipt_path}")
-            receipt_attempted = True
+            receipt_content = _json_bytes(receipt)
+            journal_document["receipt"] = {
+                "path": str(receipt_path),
+                "sha256": hashlib.sha256(receipt_content).hexdigest(),
+            }
+            journal_document["step"] = "publishing_receipt"
+            _write_journal(journal, journal_document, repo)
             _atomic_json(
                 receipt_path,
                 receipt,
@@ -1005,16 +1517,26 @@ def apply_upgrade(
             return receipt_path
         except BaseException as primary:
             recovery_error: BaseException | None = None
-            if previous is not None and maintenance_entered:
+            if journal_document is not None and journal_document["receipt"] is not None:
                 try:
-                    _restore_active(active, previous)
-                    if installed_changed:
-                        _restore_installed_record(
-                            installed_record_before,
-                            expected_path=install_root / "INSTALLED",
-                        )
+                    _remove_recorded_receipt_for_rollback(journal_document)
                 except BaseException as exc:
                     recovery_error = exc
+            if previous is not None and maintenance_entered:
+                if recovery_error is None:
+                    try:
+                        _restore_active(
+                            active,
+                            previous,
+                            allowed_current_targets=(maintenance, candidate_release),
+                        )
+                        if installed_changed:
+                            _restore_installed_record(
+                                installed_record_before,
+                                expected_path=install_root / "INSTALLED",
+                            )
+                    except BaseException as exc:
+                        recovery_error = exc
             elif previous is not None:
                 try:
                     prior_state_is_intact = _active_matches_previous(active, previous)
@@ -1024,19 +1546,12 @@ def apply_upgrade(
                     recovery_error = RolloutError(
                         "active environment changed after its prior state was recorded"
                     )
-            if receipt_attempted and receipt_path is not None:
-                try:
-                    receipt_path.unlink(missing_ok=True)
-                    prepare_upgrade._fsync_directory(receipt_path.parent)
-                except BaseException as exc:
-                    if recovery_error is None:
-                        recovery_error = exc
             if recovery_error is None:
                 journal.unlink(missing_ok=True)
                 prepare_upgrade._fsync_directory(install_root)
             else:
                 raise RolloutError(
-                    f"{primary}; active-environment recovery also failed: {recovery_error}; "
+                    f"{primary}; rollout recovery also failed: {recovery_error}; "
                     f"inspect {journal}"
                 ) from primary
             raise
@@ -1048,8 +1563,8 @@ def apply_upgrade(
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "verify or apply an exact prepared Janus upgrade; this command never reads "
-            "Janus as authority"
+            "verify, apply, or recover an exact prepared Janus upgrade; this command "
+            "never reads Janus as authority"
         )
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1066,6 +1581,14 @@ def _parser() -> argparse.ArgumentParser:
                 action="store_true",
                 help="acknowledge the displayed live effects; not proof of authorization",
             )
+    recover = subparsers.add_parser("recover")
+    recover.add_argument("--install-root", required=True, type=Path)
+    recover.add_argument("--active", required=True, type=Path)
+    recover.add_argument(
+        "--yes",
+        action="store_true",
+        help="reconcile the exact displayed journal; never restores the database",
+    )
     return parser
 
 
@@ -1083,9 +1606,46 @@ def _print_plan(result: dict, *, apply: bool) -> None:
         print("rollback       code environment retained; database restore is never automatic")
 
 
+def _print_recovery_plan(result: dict) -> None:
+    print(f"journal        {result['journal']}")
+    print(f"journal sha256 {result['journal_sha256']}")
+    print(f"recorded step  {result['step']}")
+    print(f"active state   {result['active_state']}")
+    print(f"provenance     {result['installed_state']}")
+    print(f"receipt        {result['receipt_state']}")
+    print(f"reconciliation {result['resolution']}")
+    for effect in result["effects"]:
+        print(f"effect         {effect}")
+    print(f"database       {result['database']} (never restored automatically)")
+    print("authority      external to Janus; recovery evidence does not grant permission")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     repo = Path(__file__).resolve().parents[1]
+    if args.command == "recover":
+        try:
+            plan = inspect_recovery(
+                install_root=args.install_root,
+                active=args.active,
+                repo=repo,
+            )
+            _print_recovery_plan(plan)
+            if not args.yes:
+                print("recovery only  no active, provenance, receipt, journal, or database write")
+                return 0
+            result = recover_upgrade(
+                install_root=args.install_root,
+                active=args.active,
+                repo=repo,
+                expected_journal_sha256=plan["journal_sha256"],
+            )
+        except RolloutError as exc:
+            print(f"refusing: {exc}", file=sys.stderr)
+            return 2
+        print(f"reconciled     {result['resolution']}")
+        print("database       unchanged by recovery")
+        return 0
     try:
         result = preflight(
             bundle=args.bundle,

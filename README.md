@@ -164,6 +164,26 @@ restores the database backup automatically because doing so could discard later
 decisions. See [ADR 0005](docs/adr/0005-receipt-bound-rollout.md) and the
 [rollout-receipt v1 contract](docs/spec/rollout-receipt-v1.md).
 
+If a process or machine stops after maintenance begins, the durable journal
+keeps ordinary Janus commands fail-closed. Inspect it from an exact clean
+checkout of the candidate commit that began the rollout:
+
+```bash
+python scripts/apply_upgrade.py recover \
+  --install-root "$HOME/.local/share/janus" \
+  --active "$HOME/.local/share/janus/venv"
+```
+
+The default is read-only and prints the journal digest, observed active and
+provenance states, and exact reconciliation effects. After reviewing that
+output, repeat with `--yes`. Recovery revalidates the same digest under the
+rollout lock. An incomplete rollout restores only the exact prior code entry
+point and `INSTALLED` bytes; a fully published, exact success receipt completes
+forward by removing the stale journal. Unknown state is left untouched. The
+database backup is never restored automatically. The closed journal contract
+and refusal rules are in the [rollout recovery journal v1
+specification](docs/spec/rollout-in-progress-v1.md).
+
 ## Why this exists
 
 A well-run agent fleet manufactures human-decision debt on purpose. The
