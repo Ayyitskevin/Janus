@@ -107,7 +107,7 @@ def _committed_copy(root: Path) -> tuple[Path, str, str]:
     _run("git", "init", "-q", cwd=repo)
     _run("git", "config", "user.name", "Janus rollout test", cwd=repo)
     _run("git", "config", "user.email", "janus-rollout@example.invalid", cwd=repo)
-    newest = repo / "src/janus/migrations/0004_decision_learning_events.sql"
+    newest = repo / "src/janus/migrations/0005_shadow_predictions.sql"
     newest_bytes = newest.read_bytes()
     newest.unlink()
     _run("git", "add", ".", cwd=repo)
@@ -1377,7 +1377,7 @@ def test_recovery_after_migration_restores_code_but_never_the_database(
                 "SELECT version FROM schema_migrations ORDER BY version"
             )
         ]
-    assert migrations_before_recovery[-1] == "0004_decision_learning_events"
+    assert migrations_before_recovery[-1] == "0005_shadow_predictions"
 
     plan = apply_upgrade.inspect_recovery(
         install_root=case["install_root"],
@@ -1524,6 +1524,7 @@ def test_end_to_end_rollout_activates_exact_candidate_and_retains_rollback(
         "0002_check_revisions",
         "0003_bound_rulings_require_digest",
         "0004_decision_learning_events",
+        "0005_shadow_predictions",
     ]
     assert Path(receipt["rollback"]["code_environment"]).is_dir()
     assert Path(receipt["rollback"]["database_backup"]).is_file()

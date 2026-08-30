@@ -226,6 +226,12 @@ available before each ruling, with missing facts represented as unknown.
 **Exit:** shadow predictions cannot close gates or invoke consumers, and the
 evaluation reports every denominator including abstentions.
 
+**Implementation built; empirical exit not met.** The deep engine, deterministic
+eligibility, loopback Vulcan and in-memory adapters, typed append-only prediction
+events, and chronological report are implemented. Tests prove the mechanics do
+not close gates. Real prospective predictions and later human labels are still
+required before M6 can exit; the current corpus cannot supply them retroactively.
+
 ### M7 — recommendation
 
 - Applicable predictions on `show` and the operator board.
