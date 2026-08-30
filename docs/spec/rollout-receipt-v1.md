@@ -15,7 +15,9 @@ a later working directory.
 
 - `preparation.manifest_sha256` binds the exact preparation receipt.
 - Candidate and rollback commits plus wheel digests bind both installed
-  environments.
+  environments. When rollback is already a commit-addressed active release,
+  its digest comes from the validated private release marker; a newly rebuilt
+  rehearsal wheel for the same commit may have different archive bytes.
 - `preparation.backup_sha256` binds the coherent database recovery snapshot.
 - `before` and `after` carry database integrity, migration checksums, every
   ledger-table count and canonical content digest, plus observed family modes.

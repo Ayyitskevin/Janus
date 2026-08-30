@@ -301,8 +301,7 @@ def _validate_active(
     install_root: Path,
     *,
     expected_commit: str,
-    expected_wheel_sha256: str,
-) -> None:
+) -> str | None:
     try:
         info = active.lstat()
     except OSError as exc:
@@ -310,7 +309,7 @@ def _validate_active(
     if info.st_uid != os.geteuid():
         raise RolloutError(f"active environment is not owned by this process: {active}")
     if stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
-        return
+        return None
     if not stat.S_ISLNK(info.st_mode):
         raise RolloutError(f"active environment is neither a directory nor a symlink: {active}")
     target = active.resolve(strict=True)
@@ -328,11 +327,9 @@ def _validate_active(
             f"{target}"
         )
     marker = _release_marker(target)
-    if marker != {
-        "commit": expected_commit,
-        "wheel_sha256": expected_wheel_sha256,
-    }:
-        raise RolloutError("active release marker does not match the prepared rollback artifact")
+    if marker["commit"] != expected_commit:
+        raise RolloutError("active release marker does not match the installed provenance commit")
+    return marker["wheel_sha256"]
 
 
 def _snapshot_facts(db: Path) -> tuple[dict, dict]:
@@ -405,11 +402,13 @@ def preflight(
     )
     if installed["commit"] != manifest["artifacts"]["rollback"]["commit"]:
         raise RolloutError("installed commit does not match the prepared rollback commit")
-    _validate_active(
+    installed_wheel_sha256 = _validate_active(
         active,
         install_root,
         expected_commit=installed["commit"],
-        expected_wheel_sha256=_wheel_digest(manifest, "rollback"),
+    )
+    rollback_release_wheel_sha256 = (
+        installed_wheel_sha256 or _wheel_digest(manifest, "rollback")
     )
     _validate_wrapper(wrapper, active)
     facts, family = _require_fresh_snapshot(manifest, db)
@@ -420,6 +419,7 @@ def preflight(
         "installed": installed,
         "installed_bytes": installed_bytes,
         "installed_mode": installed_mode,
+        "rollback_release_wheel_sha256": rollback_release_wheel_sha256,
         "facts": facts,
         "family": family,
     }
@@ -462,9 +462,24 @@ def _release_marker(release: Path) -> dict:
     marker = release / "JANUS_RELEASE.json"
     _safe_owned_file(marker, label="release marker", expected_mode=PRIVATE_FILE_MODE)
     try:
-        return json.loads(marker.read_text())
+        document = json.loads(marker.read_text())
     except (OSError, json.JSONDecodeError) as exc:
         raise RolloutError(f"invalid release marker: {marker}: {exc}") from exc
+    if (
+        not isinstance(document, dict)
+        or set(document) != {"commit", "wheel_sha256"}
+        or not isinstance(document["commit"], str)
+        or len(document["commit"]) != 40
+        or any(character not in "0123456789abcdef" for character in document["commit"])
+        or not isinstance(document["wheel_sha256"], str)
+        or len(document["wheel_sha256"]) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in document["wheel_sha256"]
+        )
+    ):
+        raise RolloutError(f"invalid release marker schema: {marker}")
+    return document
 
 
 def _stage_release(
@@ -1325,7 +1340,7 @@ def apply_upgrade(
         )
         rollback_release = _stage_release(
             wheel=initial["files"]["rollback_wheel"],
-            wheel_sha256=_wheel_digest(manifest, "rollback"),
+            wheel_sha256=initial["rollback_release_wheel_sha256"],
             commit=rollback,
             releases=releases,
         )
@@ -1345,7 +1360,7 @@ def apply_upgrade(
             rollback_record = {
                 "commit": rollback,
                 "environment": str(rollback_release),
-                "wheel_sha256": _wheel_digest(manifest, "rollback"),
+                "wheel_sha256": initial["rollback_release_wheel_sha256"],
             }
             journal_document = {
                 "schema": JOURNAL_SCHEMA,

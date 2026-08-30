@@ -456,7 +456,7 @@ def test_preflight_refuses_symlinked_bundle_content_and_wrong_wrapper(
         _preflight(commented)
 
 
-def test_preflight_binds_an_active_symlink_to_installed_release(
+def test_preflight_reuses_the_exact_installed_rollback_release(
     prepared_template, tmp_path
 ):
     case = _case(prepared_template, tmp_path)
@@ -466,13 +466,12 @@ def test_preflight_binds_an_active_symlink_to_installed_release(
     os.replace(case["active"], target)
     target.chmod(0o700)
     marker = target / "JANUS_RELEASE.json"
+    installed_wheel_sha256 = "a" * 64
     marker.write_text(
         json.dumps(
             {
                 "commit": case["rollback"],
-                "wheel_sha256": apply_upgrade._wheel_digest(
-                    case["manifest"], "rollback"
-                ),
+                "wheel_sha256": installed_wheel_sha256,
             }
         )
         + "\n"
@@ -480,14 +479,60 @@ def test_preflight_binds_an_active_symlink_to_installed_release(
     marker.chmod(0o600)
     case["active"].symlink_to(target)
 
-    _preflight(case)
+    result = _preflight(case)
+
+    assert result["rollback_release_wheel_sha256"] == installed_wheel_sha256
 
     marker.write_text(
-        json.dumps({"commit": case["rollback"], "wheel_sha256": "0" * 64}) + "\n"
+        json.dumps({"commit": "0" * 40, "wheel_sha256": installed_wheel_sha256}) + "\n"
     )
     marker.chmod(0o600)
-    with pytest.raises(apply_upgrade.RolloutError, match="marker does not match"):
+    with pytest.raises(apply_upgrade.RolloutError, match="installed provenance commit"):
         _preflight(case)
+
+
+def test_apply_reuses_the_installed_release_when_a_rebuild_has_a_new_digest(
+    prepared_template, tmp_path
+):
+    case = _case(prepared_template, tmp_path)
+    releases = case["install_root"] / "releases"
+    releases.mkdir(mode=0o700)
+    prepared_wheel_sha256 = apply_upgrade._wheel_digest(case["manifest"], "rollback")
+    rollback_wheel = next(case["bundle"].glob("artifacts/rollback/*.whl"))
+    rollback_release = apply_upgrade._stage_release(
+        wheel=rollback_wheel,
+        wheel_sha256=prepared_wheel_sha256,
+        commit=case["rollback"],
+        releases=releases,
+    )
+    shutil.rmtree(case["active"])
+    installed_wheel_sha256 = "a" * 64
+    marker = rollback_release / "JANUS_RELEASE.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "commit": case["rollback"],
+                "wheel_sha256": installed_wheel_sha256,
+            }
+        )
+        + "\n"
+    )
+    marker.chmod(0o600)
+    case["active"].symlink_to(rollback_release)
+
+    receipt_path = apply_upgrade.apply_upgrade(
+        bundle=case["bundle"],
+        db=case["db"],
+        install_root=case["install_root"],
+        active=case["active"],
+        wrapper=case["wrapper"],
+        repo=case["repo"],
+    )
+
+    receipt = json.loads(receipt_path.read_text())
+    assert receipt["releases"]["rollback"]["wheel_sha256"] == installed_wheel_sha256
+    assert json.loads(marker.read_text())["wheel_sha256"] == installed_wheel_sha256
+    _assert_candidate_state(case)
 
 
 def test_apply_requires_explicit_effect_confirmation(prepared_template, tmp_path):
