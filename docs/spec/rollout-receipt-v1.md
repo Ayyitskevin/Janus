@@ -24,8 +24,11 @@ a later working directory.
   while the activation seam is introduced.
 
 `steps` is an ordered list of completed effects. A successful document must
-contain every required step. A handled failure does not publish a success
-receipt; it leaves a private in-progress journal until restoration is verified.
+contain every required step. A handled failure before publication of matching
+receipt bytes does not publish a success receipt; it leaves a private in-progress
+journal until restoration is verified. Once an exact receipt exists alongside
+matching candidate activation and provenance, cleanup failure preserves that
+completed-forward state and never removes the receipt to manufacture a rollback.
 Before maintenance mutates the active path, that journal durably records the
 prior path kind, symlink target or reserved legacy path, and filesystem identity.
 It also records the exact prior `INSTALLED` bytes as base64, their SHA-256 digest,

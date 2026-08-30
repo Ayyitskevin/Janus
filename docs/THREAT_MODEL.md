@@ -60,10 +60,13 @@ holds the database family open. Only then may it repair the family to
 proof of authority, and the rollout never reads Janus to decide whether it may
 run. Candidate and rollback code are staged before maintenance, activation is
 an atomic pointer replacement, and a durable in-progress journal prevents a
-crash from being mistaken for success. Handled failures restore the prior code
-entry point and provenance. The coherent database backup is retained but never
-restored automatically, because that could delete legitimate decisions written
-after it was taken.
+crash from being mistaken for success. Handled failures before a matching
+success receipt restore the prior code entry point and provenance. Once exact
+receipt bytes and matching candidate state exist, publication or journal-cleanup
+errors preserve them; rolling code backward around an already-migrated database
+would create a false rollback. The coherent database backup is retained but
+never restored automatically, because that could delete legitimate decisions
+written after it was taken.
 
 Crash recovery treats the journal as untrusted local input. The repository
 accepts only the closed journal schema from the exact clean candidate checkout,

@@ -166,7 +166,9 @@ The crash path is now an executable interface rather than operator prose.
 `apply_upgrade.py recover` validates the closed
 `janus.rollout-in-progress.v1` journal and exact live identities, previews
 without mutation, then either restores prior code/provenance or recognizes an
-exact durably published success. It never restores the database. See
+exact durably published success. Post-receipt publication and cleanup errors
+preserve matching candidate state rather than manufacture a rollback. It never
+restores the database. See
 `docs/spec/rollout-in-progress-v1.md` and the dated recovery evaluation.
 
 This is intentionally not a shipped-install claim. Preparation records

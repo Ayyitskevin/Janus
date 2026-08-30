@@ -27,7 +27,9 @@ entire descriptor, and reports one of two outcomes:
 
 - **complete forward:** an exact, schema-valid success receipt exists and the
   active environment plus installed provenance match it. The only remaining
-  effect is removal of the stale journal.
+  effect is removal of the stale journal. The apply path uses the same commit
+  point: a receipt-publication or journal-cleanup exception preserves matching
+  candidate state and refuses a second rollout attempt.
 - **restore prior code:** no success receipt exists. The exact predecessor and
   prior installed provenance are restored, then the journal is removed only
   after both postconditions are rechecked.

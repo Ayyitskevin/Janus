@@ -1262,22 +1262,21 @@ def recover_upgrade(
         return result
 
 
-def _remove_recorded_receipt_for_rollback(journal: dict) -> None:
+def _matching_recorded_receipt(journal: dict) -> Path | None:
     record = journal.get("receipt")
     if record is None:
-        return
+        return None
     path = Path(record["path"])
     if not path.exists() and not path.is_symlink():
-        return
+        return None
     _safe_owned_file(
         path,
         label="recorded rollout receipt",
         expected_mode=PRIVATE_FILE_MODE,
     )
     if _sha256(path) != record["sha256"]:
-        raise RolloutError("refusing to remove a receipt whose digest changed")
-    path.unlink()
-    prepare_upgrade._fsync_directory(path.parent)
+        raise RolloutError("recorded rollout receipt digest changed")
+    return path
 
 
 def apply_upgrade(
@@ -1517,11 +1516,36 @@ def apply_upgrade(
             return receipt_path
         except BaseException as primary:
             recovery_error: BaseException | None = None
+            committed_receipt: Path | None = None
             if journal_document is not None and journal_document["receipt"] is not None:
                 try:
-                    _remove_recorded_receipt_for_rollback(journal_document)
+                    committed_receipt = _matching_recorded_receipt(journal_document)
+                    if committed_receipt is not None:
+                        active_state = _active_recovery_state(
+                            Path(journal_document["target"]["active_environment"]),
+                            journal_document["previous"],
+                            maintenance=Path(
+                                journal_document["target"]["maintenance_environment"]
+                            ),
+                            candidate=Path(journal_document["candidate"]["environment"]),
+                        )
+                        installed_state = _installed_record_state(
+                            Path(journal_document["target"]["installed_record"]),
+                            journal_document["installed_record_before"],
+                            journal_document["installed_record_after"],
+                        )
+                        if active_state != "candidate" or installed_state != "after":
+                            raise RolloutError(
+                                "recorded success receipt exists but candidate state disagrees"
+                            )
                 except BaseException as exc:
                     recovery_error = exc
+            if committed_receipt is not None and recovery_error is None:
+                completed = True
+                raise RolloutError(
+                    "rollout completed but journal cleanup failed: "
+                    f"{primary}; preserved receipt {committed_receipt}; do not retry rollout"
+                ) from primary
             if previous is not None and maintenance_entered:
                 if recovery_error is None:
                     try:
