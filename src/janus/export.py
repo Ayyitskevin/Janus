@@ -16,12 +16,12 @@ from pathlib import Path
 from typing import Any
 
 from . import core
+from .canonical import CANONICALIZER, canonical_json
 from .core import JanusError
 
 ENVELOPE_SCHEMA = "janus.export.v1"
 DOCUMENT_SCHEMA = "janus.gates.v1"
 RECORD_SCHEMA = "janus.gate.v1"
-CANONICALIZER = "janus.canonical-json.v1"
 BINDING_KINDS = ("file", "git", "text")
 SEMANTICS = {
     "rulings": "evidence_not_authority",
@@ -39,47 +39,6 @@ STATE_VOCABULARY = (
     {"word": "superseded", "terminal": True, "human_ruled": False},
 )
 _STATE_BY_WORD = {entry["word"]: entry for entry in STATE_VOCABULARY}
-
-
-def _validate_json_value(value: Any, path: str = "$") -> None:
-    if value is None or isinstance(value, bool):
-        return
-    if isinstance(value, str):
-        try:
-            value.encode("utf-8")
-        except UnicodeEncodeError as exc:
-            raise JanusError(f"{CANONICALIZER} refuses invalid Unicode at {path}") from exc
-        return
-    if isinstance(value, int):
-        if not -(2**63) <= value < 2**63:
-            raise JanusError(f"{CANONICALIZER} requires a signed 64-bit integer at {path}")
-        return
-    if isinstance(value, float):
-        raise JanusError(f"{CANONICALIZER} refuses floating-point value at {path}")
-    if isinstance(value, list):
-        for index, item in enumerate(value):
-            _validate_json_value(item, f"{path}[{index}]")
-        return
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise JanusError(f"{CANONICALIZER} requires string key at {path}")
-            _validate_json_value(key, f"{path}.<key>")
-            _validate_json_value(item, f"{path}.{key}")
-        return
-    raise JanusError(f"{CANONICALIZER} cannot encode {type(value).__name__} at {path}")
-
-
-def canonical_json(value: Any) -> bytes:
-    """Return the exact bytes defined by ``janus.canonical-json.v1``."""
-    _validate_json_value(value)
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        allow_nan=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
 
 
 def _sha256(value: Any) -> str:

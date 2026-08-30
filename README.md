@@ -29,7 +29,10 @@ janus check <id>           # preview one stored command, confirm, then observe
 janus stats                # the dated scorecard: is anyone actually using this
 janus export [<id>]        # stable, digest-verified evidence (never authority)
 janus revise-check <id> --kind delivery --command "..." --reason "..."
-janus decide <id> --approve --reason "..." [--option <id>]
+janus context <id> --project janus --action-class merge --environment test \
+  --fact tests_passed=yes --fact security_sensitive=no --evidence-ref ci:run-123
+janus decide <id> --approve --reason "..." --reason-code tests.pass \
+  --counterfactual "A failed required check would change this decision."
 ```
 
 `janus` opens the board by default; `janus board` remains its explicit form.
@@ -67,6 +70,13 @@ migration, runs no check, and does not inspect live bindings. The exact format
 and cross-language conformance vector are in [the export v1
 specification](docs/spec/export-v1.md). Verifying an export proves content
 identity only; it does not turn a ruling into permission to act.
+Decision contexts and structured human feedback are typed append-only audit
+events, so the unchanged export v1 envelope carries their exact bytes and
+digests. Context can be recorded only before a ruling; omitted facts remain
+`unknown`, and feedback cites the exact latest snapshot. The closed payloads
+and minimization rules are in [decision-learning events
+v1](docs/spec/decision-learning-events-v1.md). They collect future evaluation
+evidence; they do not make a prediction or change who decides.
 For a WAL-mode ledger, SQLite may materialize private `-wal`/`-shm`
 coordination files even on a `mode=ro` connection. Export post-checks those
 files against the same `0600` boundary; it never creates the main database or

@@ -796,6 +796,198 @@ def test_update_and_delete_are_refused_on_real_rows(conn, table):
     conn.rollback()
 
 
+# ------------------------ decision-learning evidence is pre-ruling --------
+def test_decision_context_is_normalized_hashed_and_append_only(conn):
+    g = _gate(conn)
+
+    first = core.record_decision_context(
+        conn,
+        g,
+        project=" Janus ",
+        action_class=" Merge ",
+        environment="local",
+        facts={"tests_passed": True, "security_sensitive": False},
+        evidence_refs=["ci:run-123"],
+        actor="tester+codex",
+    )
+    second = core.record_decision_context(
+        conn,
+        g,
+        project="janus",
+        action_class="merge",
+        environment="test",
+        facts={"tests_passed": False},
+        evidence_refs=[],
+        actor="tester+codex",
+    )
+
+    assert first["context"]["project"] == "janus"
+    assert first["context"]["facts"]["tests_passed"] is True
+    assert first["context"]["facts"]["legal"] is None
+    assert len(first["context_sha256"]) == 64
+    assert [item["event_id"] for item in core.get_gate(conn, g)["decision_contexts"]] == [
+        first["event_id"],
+        second["event_id"],
+    ]
+    with pytest.raises(sqlite3.DatabaseError, match="append-only"):
+        conn.execute("UPDATE audit_events SET detail = '{}' WHERE id = ?", (first["event_id"],))
+    conn.rollback()
+
+
+def test_context_cannot_be_backfilled_after_any_terminal_event(conn):
+    g = _gate(conn)
+    core.close_gate(conn, g, state="refused", reason="not this time", actor="kevin")
+
+    with pytest.raises(JanusError, match="after gate .* refused"):
+        core.record_decision_context(
+            conn,
+            g,
+            project="janus",
+            action_class="merge",
+            environment="local",
+            facts={},
+            evidence_refs=[],
+            actor="tester",
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="existing open gate"):
+        conn.execute(
+            "INSERT INTO audit_events (at, actor, verb, gate_id, detail) "
+            "VALUES (?,?,?,?,?)",
+            (
+                core.now(),
+                "tester",
+                "decision_context",
+                g,
+                '{"schema":"janus.decision-context-event.v1",'
+                '"context":{},"context_sha256":"' + "0" * 64 + '"}',
+            ),
+        )
+    conn.rollback()
+
+
+def test_feedback_labels_the_latest_pre_ruling_context_atomically(conn):
+    g = _gate(conn)
+    old = core.record_decision_context(
+        conn,
+        g,
+        project="janus",
+        action_class="merge",
+        environment="test",
+        facts={"tests_passed": False},
+        evidence_refs=[],
+        actor="tester",
+    )
+    latest = core.record_decision_context(
+        conn,
+        g,
+        project="janus",
+        action_class="merge",
+        environment="production",
+        facts={"tests_passed": True, "non_author_reviewed": True},
+        evidence_refs=["github:Janus/pull/23"],
+        actor="tester",
+    )
+
+    closed = core.close_gate(
+        conn,
+        g,
+        state="approved",
+        reason="review and tests passed",
+        actor="kevin",
+        reason_codes=["tests.pass", "review.non_author"],
+        counterfactual="A failed required check would change this decision.",
+    )
+
+    feedback = closed["decision_feedback"]
+    assert feedback["context_event_id"] == latest["event_id"]
+    assert feedback["context_event_id"] != old["event_id"]
+    assert feedback["context_sha256"] == latest["context_sha256"]
+    assert feedback["outcome"] == "approved"
+    assert feedback["reason_codes"] == ["tests.pass", "review.non_author"]
+    assert feedback["counterfactual"] == "A failed required check would change this decision."
+
+
+def test_feedback_without_pre_ruling_context_leaves_gate_open(conn):
+    g = _gate(conn)
+
+    with pytest.raises(JanusError, match="without a pre-ruling decision context"):
+        core.close_gate(
+            conn,
+            g,
+            state="approved",
+            reason="looks good",
+            actor="kevin",
+            reason_codes=["looks.good"],
+        )
+
+    assert core.get_gate(conn, g)["state"] == "open"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM audit_events WHERE gate_id = ? AND verb = 'decision_feedback'",
+        (g,),
+    ).fetchone()[0] == 0
+
+
+@pytest.mark.parametrize(
+    ("facts", "evidence_refs", "match"),
+    [
+        ({"tests_passed": 1}, [], "true, false, or unknown"),
+        ({}, [7], "must be strings"),
+    ],
+)
+def test_context_refuses_json_lookalikes(conn, facts, evidence_refs, match):
+    g = _gate(conn)
+    with pytest.raises(JanusError, match=match):
+        core.record_decision_context(
+            conn,
+            g,
+            project="janus",
+            action_class="merge",
+            environment="test",
+            facts=facts,
+            evidence_refs=evidence_refs,
+            actor="tester",
+        )
+
+
+def test_database_refuses_feedback_that_impersonates_the_ruler(conn):
+    from janus.canonical import canonical_json
+
+    g = _gate(conn)
+    context = core.record_decision_context(
+        conn,
+        g,
+        project="janus",
+        action_class="merge",
+        environment="test",
+        facts={},
+        evidence_refs=[],
+        actor="tester",
+    )
+    core.close_gate(conn, g, state="approved", reason="yes", actor="kevin")
+    payload = {
+        "schema": core.DECISION_FEEDBACK_SCHEMA,
+        "context_event_id": context["event_id"],
+        "context_sha256": context["context_sha256"],
+        "outcome": "approved",
+        "reason_codes": ["impersonation.attempt"],
+        "counterfactual": None,
+    }
+
+    with pytest.raises(sqlite3.IntegrityError, match="human ruling"):
+        conn.execute(
+            "INSERT INTO audit_events (at, actor, verb, gate_id, detail) "
+            "VALUES (?,?,?,?,?)",
+            (
+                core.now(),
+                "not-kevin",
+                "decision_feedback",
+                g,
+                canonical_json(payload).decode(),
+            ),
+        )
+    conn.rollback()
+
+
 # ------------------------------------------- corpus-driven requirements -----
 def test_a_gate_with_options_cannot_be_approved_without_choosing_one(conn):
     g = _gate(conn, options=[{"id": "a", "label": "A", "recommended": True},
@@ -1601,7 +1793,7 @@ def test_the_scorecard_has_no_blank_measures(tmp_path):
     db, _ = _populated(tmp_path)
     out = _stats(db)
     for measure in ("RAISED", "CLOSED", "TIME TO RULING", "CONSUMER ACTED",
-                    "decay check", "horizon", "CHECKS RUN"):
+                    "DECISION LEARNING", "decay check", "horizon", "CHECKS RUN"):
         line = next(ln for ln in out.splitlines() if measure in ln)
         assert any(ch.isdigit() for ch in line), f"{measure} printed no number: {line}"
     for blank in ("n/a", "None", "TBD", "unknown)"):
@@ -1643,6 +1835,40 @@ def test_a_gate_with_no_delivery_check_is_unknown_never_acted(tmp_path):
 
     d = json.loads(_stats(db, "--json"))["consumer_acted"]
     assert d == {"eligible": 2, "measurable": 1, "confirmed": 1, "unknown": 1}, d
+
+
+def test_learning_scorecard_counts_only_prospective_context_and_feedback(tmp_path):
+    db = tmp_path / "s.db"
+    conn = core.connect(db)
+    old = _gate(conn)
+    core.close_gate(conn, old, state="approved", reason="legacy", actor="kevin")
+    learnable = _gate(conn)
+    core.record_decision_context(
+        conn,
+        learnable,
+        project="janus",
+        action_class="merge",
+        environment="test",
+        facts={"tests_passed": True},
+        evidence_refs=[],
+        actor="tester",
+    )
+    core.close_gate(
+        conn,
+        learnable,
+        state="refused",
+        reason="hold",
+        actor="kevin",
+        reason_codes=["review.hold"],
+    )
+
+    assert json.loads(_stats(db, "--json"))["decision_learning"] == {
+        "eligible_human_rulings": 2,
+        "with_pre_ruling_context": 1,
+        "with_structured_feedback": 1,
+        "approvals": 1,
+        "refusals": 1,
+    }
 
 
 def test_the_scorecard_on_an_empty_ledger_invents_nothing(tmp_path):

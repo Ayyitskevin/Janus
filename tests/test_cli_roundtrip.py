@@ -91,12 +91,35 @@ def test_installed_cli_preserves_the_evidence_not_authority_boundary(tmp_path: P
     assert "current raise-time bytes match" in before
     assert not marker.exists(), "showing an open gate executed stored command text"
 
+    context = run(
+        "context",
+        gate_id,
+        "--project",
+        "janus",
+        "--action-class",
+        "merge",
+        "--environment",
+        "test",
+        "--fact",
+        "tests_passed=yes",
+        "--fact",
+        "security_sensitive=no",
+        "--evidence-ref",
+        "ci:run-123",
+    )
+    assert "recorded decision context" in context
+    assert "unknown never means safe" in context
+
     ruled = run(
         "decide",
         gate_id,
         "--approve",
         "--reason",
         "the exact candidate passed human review",
+        "--reason-code",
+        "tests.pass",
+        "--counterfactual",
+        "A failed required check would change this decision.",
     )
     assert "This records that a human ruled. It grants nothing" in ruled
     assert "ruled on bytes @" in ruled
@@ -105,6 +128,8 @@ def test_installed_cli_preserves_the_evidence_not_authority_boundary(tmp_path: P
     after = run("show", gate_id)
     assert "current ruling-time bytes match" in after
     assert "Reading this ruling is not authority" in after
+    assert "feedback: tests.pass" in after
+    assert "would change if: A failed required check" in after
     assert not marker.exists(), "showing a ruling executed stored command text"
 
     board = run("board")
@@ -139,4 +164,12 @@ def test_installed_cli_preserves_the_evidence_not_authority_boundary(tmp_path: P
     assert record["state"] == "approved"
     assert record["terminal_event"]["type"] == "human_ruling"
     assert record["terminal_event"]["binding_evidence"]["status"] == "recorded"
+    learning_events = [
+        event for event in record["audit_events"]
+        if event["verb"] in {"decision_context", "decision_feedback"}
+    ]
+    assert [event["verb"] for event in learning_events] == [
+        "decision_context",
+        "decision_feedback",
+    ]
     assert not marker.exists(), "exporting a gate executed stored command text"

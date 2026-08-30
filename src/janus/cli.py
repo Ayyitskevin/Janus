@@ -131,6 +131,21 @@ def cmd_show(a, conn) -> int:
             print(f"    {o['option_id']}: {o['label']}{star}")
             if o["detail"]:
                 print(f"        {o['detail']}")
+    if g["decision_contexts"]:
+        snapshot = g["decision_contexts"][-1]
+        context = snapshot["context"]
+        print(f"\n  context   {context['project']} / {context['action_class']} / "
+              f"{context['environment']}")
+        print(f"            snapshot #{snapshot['event_id']} @ "
+              f"{snapshot['context_sha256'][:16]} by {snapshot['recorded_by']}")
+        known = [
+            f"{name}={'yes' if value else 'no'}"
+            for name, value in context["facts"].items()
+            if value is not None
+        ]
+        print(f"            facts: {', '.join(known) if known else 'all unknown'}")
+        if len(g["decision_contexts"]) > 1:
+            print(f"            {len(g['decision_contexts']) - 1} earlier snapshot(s) retained")
     if g["binding_sha256"]:
         print(f"\n  binding   {g['binding_kind']}:{g['binding_locator']}")
         print(f"            raised @ {g['binding_sha256'][:16]}")
@@ -178,6 +193,11 @@ def cmd_show(a, conn) -> int:
                       "raise and ruling")
         print("\n  Reading this ruling is not authority. Re-verify the digest "
               "against the live artifact before acting.")
+        if g["decision_feedback"]:
+            feedback = g["decision_feedback"]
+            print(f"            feedback: {', '.join(feedback['reason_codes'])}")
+            if feedback["counterfactual"]:
+                print(f"            would change if: {feedback['counterfactual']}")
     if g["state"] == "approved":
         print("\n  delivery  ", end="")
         delivery = core.latest_delivery_observation(conn, g["id"])
@@ -208,6 +228,46 @@ def cmd_export(a, _conn=None) -> int:
     """Emit the stable interchange artifact without opening a writable ledger."""
     sys.stdout.buffer.write(stable_export.export_gates(a.db, a.gate_id))
     sys.stdout.buffer.write(b"\n")
+    return 0
+
+
+def _parse_facts(values: list[str] | None) -> dict[str, bool | None]:
+    facts: dict[str, bool | None] = {}
+    vocabulary = {"yes": True, "no": False, "unknown": None}
+    for raw in values or []:
+        if "=" not in raw:
+            raise JanusError("--fact must be NAME=yes|no|unknown")
+        name, word = (part.strip().lower() for part in raw.split("=", 1))
+        if name not in core.DECISION_FACTS:
+            raise JanusError(
+                f"unknown decision fact {name!r}; choose from "
+                + ", ".join(core.DECISION_FACTS)
+            )
+        if name in facts:
+            raise JanusError(f"decision fact {name!r} was supplied twice")
+        if word not in vocabulary:
+            raise JanusError("--fact must be NAME=yes|no|unknown")
+        facts[name] = vocabulary[word]
+    return facts
+
+
+def cmd_context(a, conn) -> int:
+    actor = core.seat_actor(a.seat)
+    snapshot = core.record_decision_context(
+        conn,
+        a.gate_id,
+        project=a.project,
+        action_class=a.action_class,
+        environment=a.environment,
+        facts=_parse_facts(a.fact),
+        evidence_refs=a.evidence_ref,
+        actor=actor,
+    )
+    print(
+        f"recorded decision context #{snapshot['event_id']} for {a.gate_id} "
+        f"@ {snapshot['context_sha256'][:16]} (by {actor})"
+    )
+    print("  unspecified facts remain unknown; unknown never means safe")
     return 0
 
 
@@ -264,11 +324,16 @@ def _close(a, conn, state: str, reason: str) -> int:
                 "or supersede and re-raise the gate with a readable binding."
             )
     g = core.close_gate(conn, a.gate_id, state=state, reason=reason, actor=actor,
-                        option_id=getattr(a, "option", None))
+                        option_id=getattr(a, "option", None),
+                        reason_codes=getattr(a, "reason_code", None),
+                        counterfactual=getattr(a, "counterfactual", None))
     print(f"{a.gate_id} is now {g['state']} (by {actor})")
     if g["ruling"] and g["ruling"]["bound_sha256"]:
         print(f"  ruled on bytes @ {g['ruling']['bound_sha256'][:16]}")
     print("  " + _CLOSING_NOTE[g["state"]])
+    if state in core.RULED_STATES and not g["decision_feedback"]:
+        print("  no structured feedback recorded; future policy evaluation cannot "
+              "learn from this ruling")
     return 0
 
 
@@ -708,6 +773,12 @@ def _scorecard(conn) -> dict:
     }
     checked = conn.execute(
         "SELECT COUNT(*) obs, COUNT(DISTINCT gate_id) g FROM observations").fetchone()
+    human_rulings = [
+        gate for gate in gates
+        if gate["ruling"] and gate["ruling"]["state"] in core.RULED_STATES
+    ]
+    with_context = sum(bool(gate["decision_contexts"]) for gate in human_rulings)
+    with_feedback = sum(gate["decision_feedback"] is not None for gate in human_rulings)
 
     return {
         "generated_at": core.now(),
@@ -722,6 +793,17 @@ def _scorecard(conn) -> dict:
                            "unknown": len(eligible) - len(measurable)},
         "fields": fields,
         "observations": checked["obs"], "gates_ever_checked": checked["g"],
+        "decision_learning": {
+            "eligible_human_rulings": len(human_rulings),
+            "with_pre_ruling_context": with_context,
+            "with_structured_feedback": with_feedback,
+            "approvals": sum(
+                gate["ruling"]["state"] == "approved" for gate in human_rulings
+            ),
+            "refusals": sum(
+                gate["ruling"]["state"] == "refused" for gate in human_rulings
+            ),
+        },
     }
 
 
@@ -772,6 +854,15 @@ def cmd_stats(a, conn) -> int:
     print("  A gate states what its consumer will do; only a delivery check reports "
           "whether it happened.")
     print("  Unknown is never counted as acted.")
+
+    learning = d["decision_learning"]
+    eligible_rulings = learning["eligible_human_rulings"]
+    print(f"\nDECISION LEARNING         eligible {eligible_rulings} human ruling(s) · "
+          f"context {_pct(learning['with_pre_ruling_context'], eligible_rulings)} · "
+          f"feedback {_pct(learning['with_structured_feedback'], eligible_rulings)}")
+    print(f"  labels                  approvals {learning['approvals']} · "
+          f"refusals {learning['refusals']}")
+    print("  Missing context stays missing; old rulings are never hindsight-backfilled.")
 
     print("\nFIELDS THE BOARD DEPENDS ON")
     for name, n in d["fields"].items():
@@ -974,12 +1065,44 @@ def build_parser() -> argparse.ArgumentParser:
     ex.add_argument("gate_id", nargs="?", help="one gate; omit for the complete ledger")
     ex.set_defaults(fn=cmd_export)
 
+    ctx = sub.add_parser(
+        "context",
+        help="append the facts a future policy may evaluate (never a decision)",
+    )
+    ctx.add_argument("gate_id")
+    ctx.add_argument("--project", required=True,
+                     help="stable lowercase project label")
+    ctx.add_argument("--action-class", required=True,
+                     help="stable lowercase action label, such as merge or deploy")
+    ctx.add_argument("--environment", required=True,
+                     choices=core.DECISION_ENVIRONMENTS)
+    ctx.add_argument(
+        "--fact",
+        action="append",
+        help="NAME=yes|no|unknown; repeatable; omitted facts stay unknown",
+    )
+    ctx.add_argument(
+        "--evidence-ref",
+        action="append",
+        help="identifier or locator only, not raw evidence or secret content; repeatable",
+    )
+    ctx.set_defaults(fn=cmd_context)
+
     d = sub.add_parser("decide", help="rule on a gate (the human's verb)")
     d.add_argument("gate_id")
     g = d.add_mutually_exclusive_group(required=True)
     g.add_argument("--approve", action="store_true")
     g.add_argument("--refuse", action="store_true")
     d.add_argument("--reason", required=True)
+    d.add_argument(
+        "--reason-code",
+        action="append",
+        help="stable lowercase policy reason; repeatable; requires pre-ruling context",
+    )
+    d.add_argument(
+        "--counterfactual",
+        help="what fact would have changed the ruling (max 500 chars; needs a reason code)",
+    )
     d.add_argument("--option", help="required when the gate offers options")
     d.add_argument("--yes", action="store_true", help="rule even though bytes drifted")
     d.set_defaults(fn=cmd_decide)
