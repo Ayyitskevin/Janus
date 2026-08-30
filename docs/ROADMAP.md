@@ -181,6 +181,14 @@ reviewed candidate and maintenance operation. A preparation bundle is
 short-lived evidence, not authority: any later gate or ruling requires a new
 backup and rehearsal before rollout.
 
+Janus's own rollout has an explicit ordering boundary between authority and
+freshness. External human authorization may follow packet inspection without
+changing the ledger. If the decision is mirrored into Janus, the ruling is
+recorded before the final preparation or the bundle is prepared again afterward;
+a ruling after preparation changes the ledger and the freshness check refuses
+the prior packet. A focused invariant test pins this behavior without letting
+Janus read its own ledger as permission.
+
 ## Later, explicitly not next
 
 - Emitting a pointer into the conversation relay when a gate is raised. Useful,
