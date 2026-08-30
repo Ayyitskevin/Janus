@@ -196,6 +196,17 @@ def _case(prepared_template: dict, tmp_path: Path) -> dict:
     }
 
 
+def _assert_candidate_state(case: dict) -> None:
+    assert case["active"].is_symlink()
+    assert case["active"].resolve() == case["install_root"] / "releases" / case[
+        "candidate"
+    ]
+    assert f"commit          {case['candidate']}" in (
+        case["install_root"] / "INSTALLED"
+    ).read_text()
+    assert len(list((case["install_root"] / "receipts").glob("*.json"))) == 1
+
+
 def _preflight(case: dict):
     return apply_upgrade.preflight(
         bundle=case["bundle"],
@@ -1078,42 +1089,28 @@ def test_apply_preserves_journal_on_active_identity_race(
     assert case["active"].stat().st_ino == replacement_inode
 
 
-@pytest.mark.parametrize("failure_point", ["installed", "receipt"])
-def test_post_migration_write_failure_restores_code_and_removes_success_receipt(
-    prepared_template, tmp_path, monkeypatch, failure_point
+def test_post_migration_installed_write_failure_restores_prior_code(
+    prepared_template, tmp_path, monkeypatch
 ):
     case = _case(prepared_template, tmp_path)
     original_inode = case["active"].stat().st_ino
     installed_before = (case["install_root"] / "INSTALLED").read_bytes()
     monkeypatch.setattr(apply_upgrade, "_open_database_holders", lambda db: [])
     injected = False
+    real_write = apply_upgrade._atomic_private_file
 
-    if failure_point == "installed":
-        real_write = apply_upgrade._atomic_private_file
+    def fail_after_installed_write(path, content, *, mode=0o600):
+        nonlocal injected
+        real_write(path, content, mode=mode)
+        if path.name == "INSTALLED" and not injected:
+            injected = True
+            raise OSError("injected installed-record fsync failure")
 
-        def fail_after_installed_write(path, content, *, mode=0o600):
-            nonlocal injected
-            real_write(path, content, mode=mode)
-            if path.name == "INSTALLED" and not injected:
-                injected = True
-                raise OSError("injected installed-record fsync failure")
-
-        monkeypatch.setattr(
-            apply_upgrade,
-            "_atomic_private_file",
-            fail_after_installed_write,
-        )
-    else:
-        real_json = apply_upgrade._atomic_json
-
-        def fail_after_receipt_write(path, document, schema=None):
-            nonlocal injected
-            real_json(path, document, schema)
-            if path.parent.name == "receipts" and not injected:
-                injected = True
-                raise OSError("injected receipt fsync failure")
-
-        monkeypatch.setattr(apply_upgrade, "_atomic_json", fail_after_receipt_write)
+    monkeypatch.setattr(
+        apply_upgrade,
+        "_atomic_private_file",
+        fail_after_installed_write,
+    )
 
     with pytest.raises(OSError, match="injected"):
         apply_upgrade.apply_upgrade(
@@ -1131,6 +1128,120 @@ def test_post_migration_write_failure_restores_code_and_removes_success_receipt(
     assert (case["install_root"] / "INSTALLED").read_bytes() == installed_before
     assert list((case["install_root"] / "receipts").iterdir()) == []
     assert not (case["install_root"] / "ROLLOUT_IN_PROGRESS.json").exists()
+
+
+def test_matching_receipt_after_publication_error_preserves_candidate_state(
+    prepared_template, tmp_path, monkeypatch
+):
+    case = _case(prepared_template, tmp_path)
+    journal = case["install_root"] / "ROLLOUT_IN_PROGRESS.json"
+    monkeypatch.setattr(apply_upgrade, "_open_database_holders", lambda db: [])
+    real_json = apply_upgrade._atomic_json
+    injected = False
+
+    def fail_after_receipt_write(path, document, schema=None):
+        nonlocal injected
+        real_json(path, document, schema)
+        if path.parent.name == "receipts" and not injected:
+            injected = True
+            raise OSError("injected receipt publication error")
+
+    monkeypatch.setattr(apply_upgrade, "_atomic_json", fail_after_receipt_write)
+
+    with pytest.raises(
+        apply_upgrade.RolloutError,
+        match="rollout completed but journal cleanup failed",
+    ):
+        apply_upgrade.apply_upgrade(
+            bundle=case["bundle"],
+            db=case["db"],
+            install_root=case["install_root"],
+            active=case["active"],
+            wrapper=case["wrapper"],
+            repo=case["repo"],
+        )
+
+    assert injected
+    _assert_candidate_state(case)
+    assert journal.exists()
+
+
+def test_journal_cleanup_failure_preserves_committed_candidate_state(
+    prepared_template, tmp_path, monkeypatch
+):
+    case = _case(prepared_template, tmp_path)
+    journal = case["install_root"] / "ROLLOUT_IN_PROGRESS.json"
+    monkeypatch.setattr(apply_upgrade, "_open_database_holders", lambda db: [])
+    real_unlink = Path.unlink
+    injected = False
+
+    def fail_final_journal_unlink(path, *args, **kwargs):
+        nonlocal injected
+        receipts = list((case["install_root"] / "receipts").glob("*.json"))
+        if path == journal and receipts and not injected:
+            injected = True
+            raise OSError("injected final journal cleanup failure")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_final_journal_unlink)
+
+    with pytest.raises(
+        apply_upgrade.RolloutError,
+        match="rollout completed but journal cleanup failed",
+    ):
+        apply_upgrade.apply_upgrade(
+            bundle=case["bundle"],
+            db=case["db"],
+            install_root=case["install_root"],
+            active=case["active"],
+            wrapper=case["wrapper"],
+            repo=case["repo"],
+        )
+
+    assert injected
+    _assert_candidate_state(case)
+    assert journal.exists()
+
+
+def test_final_cleanup_fsync_failure_preserves_committed_candidate_state(
+    prepared_template, tmp_path, monkeypatch
+):
+    case = _case(prepared_template, tmp_path)
+    journal = case["install_root"] / "ROLLOUT_IN_PROGRESS.json"
+    monkeypatch.setattr(apply_upgrade, "_open_database_holders", lambda db: [])
+    real_fsync = apply_upgrade.prepare_upgrade._fsync_directory
+    injected = False
+
+    def fail_final_cleanup_fsync(path):
+        nonlocal injected
+        receipts = list((case["install_root"] / "receipts").glob("*.json"))
+        if path == case["install_root"] and receipts and not journal.exists() and not injected:
+            injected = True
+            raise OSError("injected final cleanup fsync failure")
+        real_fsync(path)
+
+    monkeypatch.setattr(
+        apply_upgrade.prepare_upgrade,
+        "_fsync_directory",
+        fail_final_cleanup_fsync,
+    )
+
+    with pytest.raises(
+        apply_upgrade.RolloutError,
+        match="rollout completed but journal cleanup failed",
+    ):
+        apply_upgrade.apply_upgrade(
+            bundle=case["bundle"],
+            db=case["db"],
+            install_root=case["install_root"],
+            active=case["active"],
+            wrapper=case["wrapper"],
+            repo=case["repo"],
+        )
+
+    assert injected
+    _assert_candidate_state(case)
+    assert not journal.exists()
 
 
 def test_hard_exit_after_installed_write_journals_exact_prior_provenance(

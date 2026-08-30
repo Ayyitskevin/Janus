@@ -60,6 +60,9 @@ ledger is touched.
 | hard exit after candidate migration | code restored; migration retained |
 | hard exit after candidate provenance write | prior bytes and mode restored |
 | hard exit after durable success receipt | candidate completed forward |
+| error after matching receipt publication | candidate and receipt preserved |
+| journal unlink failure after receipt | candidate, receipt, and journal preserved |
+| final journal-directory fsync failure | candidate and receipt preserved; no false rollback |
 | unknown journal property | refusal, state unchanged |
 | journal target path escape | refusal, state unchanged |
 | candidate release-marker drift | refusal, state unchanged |
@@ -85,13 +88,15 @@ From the isolated worktree environment:
 ```text
 PATH="$PWD/.venv/bin:$PATH" ./scripts/check.sh
 All checks passed!
-218 passed in 68.94s
+220 passed in 75.37s
 Successfully built janus_gates-0.1.0.tar.gz and
   janus_gates-0.1.0-py3-none-any.whl
 clean wheel install + CLI smoke + packaged-migration verification: exit 0
 
-.venv/bin/python -m pytest -q tests/test_apply_upgrade.py -k recovery_
-24 passed, 19 deselected in 19.66s
+.venv/bin/python -m pytest -q tests/test_apply_upgrade.py \
+  -k 'recovery_ or post_migration_installed or matching_receipt_after or \
+      cleanup_failure or cleanup_fsync_failure'
+28 passed, 17 deselected in 32.60s
 ```
 
 These are local implementation and measurement results, not merge or deployment
