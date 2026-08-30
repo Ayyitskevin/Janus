@@ -1,0 +1,70 @@
+name: Bug report
+description: Report reproducible Janus behavior using synthetic, non-sensitive evidence.
+title: "bug: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Janus. Do not include real gate questions,
+        locators, stored commands, rulings, credentials, private paths, or a live
+        ledger. Security-sensitive findings belong in the repository's security
+        reporting flow, not a public issue.
+  - type: input
+    id: version
+    attributes:
+      label: Janus version or commit
+      description: Use the installed version/commit reported by janus doctor, or an exact Git commit.
+      placeholder: "commit 0123456789abcdef..."
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Gate lifecycle or ruling
+        - Binding or digest verification
+        - Board, checks, or observations
+        - Stable export
+        - Storage or doctor
+        - Packaging or upgrade tooling
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+      description: Describe the behavior and exact error using synthetic values.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: Name the expected result or fail-closed refusal.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Synthetic reproduction
+      description: Provide the smallest commands or test that reproduce the issue without a live ledger.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Additional verification context
+      description: Optional OS, Python version, and redacted janus doctor findings. Do not paste sensitive paths or records.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I used synthetic evidence and removed sensitive gate, path, command, credential, and operator data.
+          required: true
+        - label: This report does not disclose a security vulnerability that needs a private channel.
+          required: true
