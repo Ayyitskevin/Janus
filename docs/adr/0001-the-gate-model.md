@@ -1,6 +1,6 @@
 # ADR 0001: The gate model
 
-- Status: Proposed
+- Status: Accepted (2026-08-24; M0 exit review completed in `3a0e907`)
 - Date: 2026-08-23
 - Amended: 2026-08-24 (open questions resolved against a real corpus);
   2026-08-29 (delivery evidence generalized after live-ledger measurement)

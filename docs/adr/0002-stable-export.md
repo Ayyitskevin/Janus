@@ -1,6 +1,6 @@
 # ADR 0002: The stable export is a read-only evidence snapshot
 
-- **Status:** Proposed; becomes Accepted when this human-reviewed change merges
+- **Status:** Accepted (2026-08-29; implementation merged as `931249a`)
 - **Date:** 2026-08-29
 - **Deciders:** Codex design synthesis; human review required by `AGENTS.md`
 - **Supersedes:** nothing

@@ -1,10 +1,30 @@
 [project]
 name = "janus-gates"
-version = "0.1.0"
+dynamic = ["version"]
 description = "A local-first ledger of the decisions an AI fleet is waiting on a human to make"
+readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
+keywords = ["ai-agents", "decision-ledger", "human-in-the-loop", "local-first"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Ayyitskevin/Janus"
+Repository = "https://github.com/Ayyitskevin/Janus"
+Issues = "https://github.com/Ayyitskevin/Janus/issues"
 
 [project.optional-dependencies]
 test = [
@@ -23,6 +43,11 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# Keep the importable package and wheel metadata on one literal version source.
+# https://setuptools.pypa.io/en/latest/userguide/pyproject_config.html#dynamic-metadata
+[tool.setuptools.dynamic]
+version = {attr = "janus.__version__"}
 
 [tool.setuptools.package-data]
 janus = ["migrations/*.sql"]

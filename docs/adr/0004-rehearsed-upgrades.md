@@ -1,6 +1,6 @@
 # ADR 0004: Upgrades are prepared as reversible evidence before deployment
 
-- **Status:** Proposed; becomes Accepted when this human-reviewed change merges
+- **Status:** Accepted (2026-08-29; implementation merged as `828d9dc`)
 - **Date:** 2026-08-29
 - **Deciders:** Codex design; human review required by `AGENTS.md`
 - **Supersedes:** the untracked host-only `janus-update` preparation path

@@ -1,6 +1,7 @@
 # ADR 0005: Rollout consumes a fresh preparation receipt, never a branch
 
-- **Status:** Proposed; becomes Accepted when this human-reviewed change merges
+- **Status:** Accepted (2026-08-29; implementation merged as `07d5f3a`, then recovery
+  hardening merged as `9342308`)
 - **Date:** 2026-08-29
 - **Deciders:** Codex design; human review required by `AGENTS.md`
 - **Depends on:** ADR 0004 and `janus.upgrade-preparation.v1`

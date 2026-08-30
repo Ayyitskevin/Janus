@@ -16,7 +16,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import core
+from . import __version__, core
 from . import export as stable_export
 from .core import JanusError
 
@@ -935,6 +935,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="janus",
         description="A local-first ledger of decisions waiting on a human. "
                     "Janus records pending authority; it does not grant authority.")
+    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     p.add_argument("--db", type=Path, help="ledger path (default ~/.janus/janus.db)")
     p.add_argument("--seat", help="declared seat, appended to your OS user")
     sub = p.add_subparsers(dest="cmd", required=True)

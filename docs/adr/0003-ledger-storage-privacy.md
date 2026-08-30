@@ -1,6 +1,6 @@
 # ADR 0003: New ledger storage is private; existing storage is diagnosed
 
-- **Status:** Proposed; becomes Accepted when this human-reviewed change merges
+- **Status:** Accepted (2026-08-29; implementation merged as `f412c7d`)
 - **Date:** 2026-08-29
 - **Deciders:** Codex design; human review required by `AGENTS.md`
 - **Supersedes:** nothing

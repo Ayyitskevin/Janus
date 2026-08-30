@@ -82,12 +82,14 @@ def main() -> int:
             env=clean_environment,
         )
         _run(str(janus), "--help", cwd=root, env=clean_environment)
+        _run(str(janus), "--version", cwd=root, env=clean_environment)
 
         verifier = """
+from importlib import metadata
 from pathlib import Path
 import sys
 
-from janus import core
+from janus import __version__, core
 
 source = sorted(path.name for path in Path(sys.argv[1]).glob("*.sql"))
 module = Path(core.__file__).resolve()
@@ -96,6 +98,25 @@ if not module.is_relative_to(Path(sys.prefix).resolve()):
 installed = sorted(path.name for path in core.MIGRATIONS_DIR.glob("*.sql"))
 if not source or installed != source:
     raise SystemExit(f"installed migrations {installed!r} do not match source {source!r}")
+
+distribution = metadata.distribution("janus-gates")
+if distribution.version != __version__:
+    raise SystemExit(
+        f"wheel version {distribution.version!r} does not match package {__version__!r}"
+    )
+message = distribution.metadata
+if message.get("Description-Content-Type") != "text/markdown":
+    raise SystemExit("wheel metadata does not identify its README as Markdown")
+expected_urls = {
+    "Homepage, https://github.com/Ayyitskevin/Janus",
+    "Repository, https://github.com/Ayyitskevin/Janus",
+    "Issues, https://github.com/Ayyitskevin/Janus/issues",
+}
+actual_urls = set(message.get_all("Project-URL") or [])
+if actual_urls != expected_urls:
+    raise SystemExit(f"wheel project URLs {actual_urls!r} do not match {expected_urls!r}")
+if "Janus" not in str(message.get_payload()):
+    raise SystemExit("wheel metadata does not contain the project README")
 """
         _run(
             str(python),
