@@ -10,6 +10,7 @@ approval record is evidence, and evidence does not confer authority.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import sqlite3
@@ -26,6 +27,24 @@ TERMINAL_STATES = ("approved", "refused", "expired", "withdrawn", "superseded")
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 DEFAULT_DB = Path(os.environ.get("JANUS_DB", Path.home() / ".janus" / "janus.db"))
 _SEAT_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")
+_CONTEXT_TOKEN_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+_REASON_CODE_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+DECISION_CONTEXT_SCHEMA = "janus.decision-context.v1"
+DECISION_CONTEXT_EVENT_SCHEMA = "janus.decision-context-event.v1"
+DECISION_FEEDBACK_SCHEMA = "janus.decision-feedback.v1"
+DECISION_ENVIRONMENTS = ("local", "test", "production", "unknown")
+DECISION_FACTS = (
+    "reversible",
+    "rollback_verified",
+    "tests_passed",
+    "non_author_reviewed",
+    "security_sensitive",
+    "money",
+    "legal",
+    "live_data",
+    "public_effect",
+    "infrastructure",
+)
 PRIVATE_DIRECTORY_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
 
@@ -673,11 +692,215 @@ def migrate(conn: sqlite3.Connection) -> list[str]:
 
 
 def audit(conn: sqlite3.Connection, actor: str, verb: str,
-          gate_id: str | None = None, detail: str | None = None) -> None:
-    conn.execute(
+          gate_id: str | None = None, detail: str | None = None) -> int:
+    cursor = conn.execute(
         "INSERT INTO audit_events (at, actor, verb, gate_id, detail) VALUES (?,?,?,?,?)",
         (now(), actor, verb, gate_id, detail),
     )
+    return int(cursor.lastrowid)
+
+
+# ---------------------------------------------------- decision learning ----
+def _decision_token(value: str, label: str) -> str:
+    if not isinstance(value, str):
+        raise JanusError(f"{label} must be a string")
+    normalized = value.strip().lower()
+    if not _CONTEXT_TOKEN_RE.fullmatch(normalized):
+        raise JanusError(
+            f"{label} must be a lowercase label (a-z0-9._-, max 64)"
+        )
+    return normalized
+
+
+def _decision_context(
+    *,
+    project: str,
+    action_class: str,
+    environment: str,
+    facts: dict[str, bool | None],
+    evidence_refs: list[str] | None,
+) -> dict:
+    unknown = set(facts) - set(DECISION_FACTS)
+    if unknown:
+        raise JanusError(f"unknown decision fact(s): {', '.join(sorted(unknown))}")
+    normalized_facts = {name: facts.get(name) for name in DECISION_FACTS}
+    if any(
+        value is not None and not isinstance(value, bool)
+        for value in normalized_facts.values()
+    ):
+        raise JanusError("decision facts must be true, false, or unknown")
+    if not isinstance(environment, str):
+        raise JanusError("environment must be a string")
+    environment = environment.strip().lower()
+    if environment not in DECISION_ENVIRONMENTS:
+        raise JanusError(
+            f"environment must be one of {', '.join(DECISION_ENVIRONMENTS)}"
+        )
+    refs: list[str] = []
+    for value in evidence_refs or []:
+        if not isinstance(value, str):
+            raise JanusError("evidence references must be strings")
+        ref = value.strip()
+        if not ref or len(ref) > 280 or any(ord(char) < 32 for char in ref):
+            raise JanusError("evidence references must be 1-280 printable characters")
+        if ref in refs:
+            raise JanusError(f"duplicate evidence reference: {ref}")
+        refs.append(ref)
+    if len(refs) > 16:
+        raise JanusError("a decision context may cite at most 16 evidence references")
+    return {
+        "schema": DECISION_CONTEXT_SCHEMA,
+        "project": _decision_token(project, "project"),
+        "action_class": _decision_token(action_class, "action class"),
+        "environment": environment,
+        "facts": normalized_facts,
+        "evidence_refs": refs,
+    }
+
+
+def _decode_json_detail(row: sqlite3.Row | dict, expected_schema: str) -> dict:
+    try:
+        payload = json.loads(row["detail"])
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise JanusError(
+            f"decision-learning event {row['id']} has invalid JSON"
+        ) from exc
+    if not isinstance(payload, dict) or payload.get("schema") != expected_schema:
+        raise JanusError(
+            f"decision-learning event {row['id']} has an incompatible schema"
+        )
+    return payload
+
+
+def _decode_context_event(row: sqlite3.Row | dict) -> dict:
+    from .canonical import canonical_json
+
+    payload = _decode_json_detail(row, DECISION_CONTEXT_EVENT_SCHEMA)
+    if set(payload) != {"schema", "context", "context_sha256"}:
+        raise JanusError(f"decision context event {row['id']} has incompatible fields")
+    context = payload["context"]
+    if not isinstance(context, dict) or set(context) != {
+        "schema", "project", "action_class", "environment", "facts", "evidence_refs"
+    }:
+        raise JanusError(f"decision context event {row['id']} has incompatible context")
+    if not isinstance(context.get("facts"), dict) or set(context["facts"]) != set(
+        DECISION_FACTS
+    ):
+        raise JanusError(f"decision context event {row['id']} has incompatible facts")
+    if not isinstance(context.get("evidence_refs"), list):
+        raise JanusError(f"decision context event {row['id']} has incompatible evidence")
+    try:
+        normalized = _decision_context(
+            project=context["project"],
+            action_class=context["action_class"],
+            environment=context["environment"],
+            facts=context["facts"],
+            evidence_refs=context["evidence_refs"],
+        )
+    except (KeyError, AttributeError, TypeError) as exc:
+        raise JanusError(f"decision context event {row['id']} is malformed") from exc
+    if normalized != context:
+        raise JanusError(f"decision context event {row['id']} is not normalized")
+    digest = hashlib.sha256(canonical_json(context)).hexdigest()
+    if payload["context_sha256"] != digest:
+        raise JanusError(f"decision context event {row['id']} has a digest mismatch")
+    return {
+        "event_id": row["id"],
+        "recorded_at": row["at"],
+        "recorded_by": row["actor"],
+        "context_sha256": digest,
+        "context": context,
+    }
+
+
+def record_decision_context(
+    conn: sqlite3.Connection,
+    gate_id: str,
+    *,
+    project: str,
+    action_class: str,
+    environment: str,
+    facts: dict[str, bool | None],
+    evidence_refs: list[str] | None,
+    actor: str,
+) -> dict:
+    from .canonical import canonical_json
+
+    gate = get_gate(conn, gate_id)
+    if gate is None:
+        raise JanusError(f"no such gate: {gate_id}")
+    if gate["state"] != "open":
+        raise JanusError(
+            f"cannot record decision context after gate {gate_id} is {gate['state']}"
+        )
+    context = _decision_context(
+        project=project,
+        action_class=action_class,
+        environment=environment,
+        facts=facts,
+        evidence_refs=evidence_refs,
+    )
+    digest = hashlib.sha256(canonical_json(context)).hexdigest()
+    envelope = {
+        "schema": DECISION_CONTEXT_EVENT_SCHEMA,
+        "context": context,
+        "context_sha256": digest,
+    }
+    try:
+        event_id = audit(
+            conn,
+            actor,
+            "decision_context",
+            gate_id,
+            canonical_json(envelope).decode("utf-8"),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError as exc:
+        conn.rollback()
+        raise JanusError(f"janus refused this decision context: {exc}") from exc
+    row = conn.execute("SELECT * FROM audit_events WHERE id = ?", (event_id,)).fetchone()
+    return _decode_context_event(row)
+
+
+def _decision_contexts(conn: sqlite3.Connection, gate_id: str) -> list[dict]:
+    return [
+        _decode_context_event(row)
+        for row in conn.execute(
+            "SELECT * FROM audit_events WHERE gate_id = ? AND verb = 'decision_context' "
+            "ORDER BY id",
+            (gate_id,),
+        )
+    ]
+
+
+def _feedback_values(
+    reason_codes: list[str] | None, counterfactual: str | None
+) -> tuple[list[str], str | None] | None:
+    if not reason_codes and counterfactual is None:
+        return None
+    if not reason_codes:
+        raise JanusError("--counterfactual requires at least one --reason-code")
+    codes: list[str] = []
+    for value in reason_codes:
+        if not isinstance(value, str):
+            raise JanusError("reason codes must be strings")
+        code = value.strip().lower()
+        if not _REASON_CODE_RE.fullmatch(code):
+            raise JanusError(
+                "reason codes must be lowercase labels (a-z0-9._-, max 64)"
+            )
+        if code in codes:
+            raise JanusError(f"duplicate reason code: {code}")
+        codes.append(code)
+    if len(codes) > 8:
+        raise JanusError("a ruling may carry at most 8 reason codes")
+    if counterfactual is not None:
+        if not isinstance(counterfactual, str):
+            raise JanusError("counterfactual must be a string")
+        counterfactual = " ".join(counterfactual.split())
+        if not counterfactual or len(counterfactual) > 500:
+            raise JanusError("counterfactual must be 1-500 characters")
+    return codes, counterfactual
 
 
 # --------------------------------------------------------------- gates ----
@@ -740,6 +963,7 @@ def raise_gate(
 def close_gate(
     conn: sqlite3.Connection, gate_id: str, *, state: str, reason: str, actor: str,
     option_id: str | None = None, rebind: bool = True,
+    reason_codes: list[str] | None = None, counterfactual: str | None = None,
 ) -> dict:
     """Write the one terminal event. The UNIQUE PK on rulings enforces 'never both'."""
     if state not in TERMINAL_STATES:
@@ -753,6 +977,15 @@ def close_gate(
             f"gate {gate_id} is already {r['state']} (ruled {r['ruled_at']} by "
             f"{r['ruled_by']}). A gate is open or closed and never both — a "
             "reversal is a NEW gate that cites this one."
+        )
+    feedback = _feedback_values(reason_codes, counterfactual)
+    if feedback is not None and state not in RULED_STATES:
+        raise JanusError("decision feedback belongs only to approved or refused rulings")
+    contexts = gate["decision_contexts"]
+    if feedback is not None and not contexts:
+        raise JanusError(
+            "cannot record structured feedback without a pre-ruling decision context; "
+            f"gate {gate_id} remains open"
         )
     # The digest is re-derived AT RULING TIME so the record says what was true
     # when the human ruled, not what was true when it was raised. If the artifact
@@ -776,15 +1009,37 @@ def close_gate(
             "open. Restore the artifact, or supersede and re-raise the gate with "
             "a readable binding."
         )
+    ruled_at = now()
     try:
         conn.execute(
             "INSERT INTO rulings (gate_id, state, ruled_at, ruled_by, reason,"
             " option_id, bound_sha256) VALUES (?,?,?,?,?,?,?)",
-            (gate_id, state, now(), actor, reason, option_id, bound),
+            (gate_id, state, ruled_at, actor, reason, option_id, bound),
         )
+        audit(conn, actor, state, gate_id, reason[:120])
+        if feedback is not None:
+            from .canonical import canonical_json
+
+            codes, normalized_counterfactual = feedback
+            context = contexts[-1]
+            payload = {
+                "schema": DECISION_FEEDBACK_SCHEMA,
+                "context_event_id": context["event_id"],
+                "context_sha256": context["context_sha256"],
+                "outcome": state,
+                "reason_codes": codes,
+                "counterfactual": normalized_counterfactual,
+            }
+            audit(
+                conn,
+                actor,
+                "decision_feedback",
+                gate_id,
+                canonical_json(payload).decode("utf-8"),
+            )
     except sqlite3.IntegrityError as e:
+        conn.rollback()
         raise JanusError(f"janus refused this ruling: {e}") from e
-    audit(conn, actor, state, gate_id, reason[:120])
     conn.commit()
     return get_gate(conn, gate_id)
 
@@ -816,6 +1071,54 @@ def get_gate(conn: sqlite3.Connection, gate_id: str) -> dict | None:
         (gate_id,))]
     gate["check_revisions"] = [dict(r) for r in conn.execute(
         "SELECT * FROM check_revisions WHERE gate_id = ? ORDER BY id", (gate_id,))]
+    gate["decision_contexts"] = _decision_contexts(conn, gate_id)
+    feedback_row = conn.execute(
+        "SELECT * FROM audit_events WHERE gate_id = ? AND verb = 'decision_feedback' "
+        "ORDER BY id LIMIT 1",
+        (gate_id,),
+    ).fetchone()
+    gate["decision_feedback"] = None
+    if feedback_row is not None:
+        payload = _decode_json_detail(feedback_row, DECISION_FEEDBACK_SCHEMA)
+        if set(payload) != {
+            "schema", "context_event_id", "context_sha256", "outcome",
+            "reason_codes", "counterfactual",
+        }:
+            raise JanusError(
+                f"decision feedback event {feedback_row['id']} has incompatible fields"
+            )
+        matching = next(
+            (
+                item for item in gate["decision_contexts"]
+                if item["event_id"] == payload["context_event_id"]
+                and item["context_sha256"] == payload["context_sha256"]
+            ),
+            None,
+        )
+        try:
+            normalized_feedback = _feedback_values(
+                payload["reason_codes"], payload["counterfactual"]
+            )
+        except (JanusError, KeyError, TypeError) as exc:
+            raise JanusError(
+                f"decision feedback event {feedback_row['id']} is malformed"
+            ) from exc
+        if (
+            matching is None
+            or normalized_feedback != (payload["reason_codes"], payload["counterfactual"])
+            or gate["ruling"] is None
+            or payload["outcome"] != gate["ruling"]["state"]
+            or feedback_row["actor"] != gate["ruling"]["ruled_by"]
+        ):
+            raise JanusError(
+                f"decision feedback event {feedback_row['id']} is inconsistent"
+            )
+        gate["decision_feedback"] = {
+            "event_id": feedback_row["id"],
+            "recorded_at": feedback_row["at"],
+            "recorded_by": feedback_row["actor"],
+            **payload,
+        }
     # Callers must never have to remember to ask for the revision. Reading
     # `decay_check` directly is how a corrected check gets quietly ignored, so
     # the effective value is computed here, once, for everyone.

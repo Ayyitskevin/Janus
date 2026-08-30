@@ -186,6 +186,15 @@ not evidence about the operator. Only attributed human rulings label operator
 behavior. Synthetic cases can test mechanics but cannot count toward activation
 quality, and autonomous outcomes never feed back as human labels.
 
+**Hindsight leakage and secret accumulation.** A context written after the
+ruling can make a weak policy look prescient, while copied chats and logs turn
+the ledger into a second sensitive-data store. Migration 0004 refuses context
+after any terminal event. The v1 context accepts closed categorical facts and
+short evidence references, not raw evidence, executable checks, artifacts, or
+credentials. Feedback is written atomically with the human ruling and binds the
+latest earlier context digest; existing rulings cannot be backfilled as though
+their facts were captured prospectively.
+
 **Delegation replay and drift.** A once-valid delegation can expire, be revoked,
 or refer to different policy bytes. Every delegated verdict binds the exact
 delegation, policy, prompt, model, decision context, and artifact identities.
