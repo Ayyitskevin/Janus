@@ -1,6 +1,6 @@
 """Janus core — the ledger, seat attribution, and bindings.
 
-> Janus records pending authority; it does not grant authority.
+> Janus records decision authority; it does not grant execution authority.
 
 Nothing in this module answers "is this authorized?". It answers "did a human
 rule, on what bytes, and when". Keeping that line is the whole point: an
