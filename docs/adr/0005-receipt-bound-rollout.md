@@ -58,15 +58,18 @@ The implementation is a deep module behind that interface:
 8. record the exact prior active environment, its filesystem identity, and the
    prior installed-provenance bytes, mode, path, and digest in the durable
    journal before the first rename or symlink replacement, then restore that
-   environment and provenance record on handled failure. The switch revalidates
-   the recorded identity immediately before mutation, so crash recovery is
-   explicit rather than guessing which path moved or reconstructing provenance.
+   environment and provenance record on handled failure before a matching
+   success receipt exists. The switch revalidates the recorded identity
+   immediately before mutation, so crash recovery is explicit rather than
+   guessing which path moved or reconstructing provenance.
 9. expose one recovery interface that inspects by default and requires `--yes`
    to reconcile the displayed journal digest. It validates a closed journal,
    exact release markers, path containment, the preserved inode, both provenance
    byte sets, and any success receipt before changing a path. A durable exact
    receipt plus matching candidate state completes forward; otherwise recovery
-   restores prior code and provenance. Unknown state is never overwritten.
+   restores prior code and provenance. Receipt-publication or journal-cleanup
+   errors preserve matching candidate state instead of undoing code around an
+   already-migrated database. Unknown state is never overwritten.
 
 The first rollout may encounter a real directory at the active path rather
 than a symbolic link. It preserves that environment under a private legacy
