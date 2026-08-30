@@ -228,6 +228,106 @@ def _invoke(case: dict, command: str, *extra: str):
     )
 
 
+def _invoke_recovery(case: dict, *extra: str):
+    return _run(
+        sys.executable,
+        str(case["repo"] / "scripts/apply_upgrade.py"),
+        "recover",
+        "--install-root",
+        str(case["install_root"]),
+        "--active",
+        str(case["active"]),
+        *extra,
+        cwd=case["repo"],
+        check=False,
+    )
+
+
+def _tree_snapshot(root: Path) -> dict[str, tuple]:
+    snapshot = {}
+    for path in [root, *sorted(root.rglob("*"))]:
+        info = path.lstat()
+        relative = str(path.relative_to(root)) or "."
+        if stat.S_ISLNK(info.st_mode):
+            payload = ("symlink", os.readlink(path))
+        elif stat.S_ISREG(info.st_mode):
+            payload = ("file", hashlib.sha256(path.read_bytes()).hexdigest())
+        else:
+            payload = ("directory", None)
+        snapshot[relative] = (
+            *payload,
+            info.st_dev,
+            info.st_ino,
+            stat.S_IMODE(info.st_mode),
+            info.st_size,
+            info.st_mtime_ns,
+        )
+    return snapshot
+
+
+def _stub_staged_releases(case: dict, monkeypatch) -> tuple[Path, Path]:
+    releases = case["install_root"] / "releases"
+    releases.mkdir(mode=0o700, exist_ok=True)
+    releases.chmod(0o700)
+    paths = []
+    for role, commit in (("candidate", case["candidate"]), ("rollback", case["rollback"])):
+        release = releases / commit
+        release.mkdir(mode=0o700, exist_ok=True)
+        release.chmod(0o700)
+        marker = release / "JANUS_RELEASE.json"
+        marker.write_text(
+            json.dumps(
+                {
+                    "commit": commit,
+                    "wheel_sha256": apply_upgrade._wheel_digest(case["manifest"], role),
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        marker.chmod(0o600)
+        paths.append(release)
+    staged = iter(paths)
+    monkeypatch.setattr(apply_upgrade, "_stage_release", lambda **kwargs: next(staged))
+    return paths[0], paths[1]
+
+
+def _hard_crash_after_maintenance(case: dict, monkeypatch) -> None:
+    _stub_staged_releases(case, monkeypatch)
+    real_enter_maintenance = apply_upgrade._enter_maintenance
+
+    def crash_after_switch(*args, **kwargs):
+        real_enter_maintenance(*args, **kwargs)
+        os._exit(91)
+
+    monkeypatch.setattr(apply_upgrade, "_enter_maintenance", crash_after_switch)
+    child = os.fork()
+    if child == 0:
+        try:
+            apply_upgrade.apply_upgrade(
+                bundle=case["bundle"],
+                db=case["db"],
+                install_root=case["install_root"],
+                active=case["active"],
+                wrapper=case["wrapper"],
+                repo=case["repo"],
+            )
+        except BaseException:
+            os._exit(92)
+        os._exit(93)
+    _, status = os.waitpid(child, 0)
+    assert os.waitstatus_to_exitcode(status) == 91
+
+
+def _rewrite_journal(case: dict, mutate) -> dict:
+    path = case["install_root"] / "ROLLOUT_IN_PROGRESS.json"
+    journal = json.loads(path.read_text())
+    mutate(journal)
+    path.write_text(json.dumps(journal, indent=2, sort_keys=True) + "\n")
+    path.chmod(0o600)
+    return journal
+
+
 def test_preflight_binds_exact_artifacts_and_changes_no_logical_state(
     prepared_template, tmp_path
 ):
@@ -482,6 +582,332 @@ def test_hard_crash_after_maintenance_switch_leaves_exact_previous_environment(
     assert case["active"].resolve() == case["install_root"] / "maintenance"
 
 
+def test_recovery_preview_is_read_only_and_yes_restores_hard_crash(
+    prepared_template, tmp_path, monkeypatch
+):
+    case = _case(prepared_template, tmp_path)
+    original_inode = case["active"].stat().st_ino
+    installed = case["install_root"] / "INSTALLED"
+    installed_before = installed.read_bytes()
+    installed_mode_before = _mode(installed)
+    _hard_crash_after_maintenance(case, monkeypatch)
+    journal_path = case["install_root"] / "ROLLOUT_IN_PROGRESS.json"
+    journal = json.loads(journal_path.read_text())
+    schema = json.loads(
+        (case["repo"] / "docs/spec/rollout-in-progress-v1.schema.json").read_text()
+    )
+    Draft202012Validator.check_schema(schema)
+    Draft202012Validator(schema).validate(journal)
+    tree_before = _tree_snapshot(case["install_root"])
+    database_before = hashlib.sha256(case["db"].read_bytes()).hexdigest()
+
+    preview = _invoke_recovery(case)
+
+    assert preview.returncode == 0, preview.stderr
+    assert "reconciliation restore_prior_code" in preview.stdout
+    assert "recovery only  no active" in preview.stdout
+    assert _tree_snapshot(case["install_root"]) == tree_before
+    assert hashlib.sha256(case["db"].read_bytes()).hexdigest() == database_before
+
+    with pytest.raises(apply_upgrade.RolloutError, match="changed after its effects"):
+        apply_upgrade.recover_upgrade(
+            install_root=case["install_root"],
+            active=case["active"],
+            repo=case["repo"],
+            expected_journal_sha256="0" * 64,
+        )
+    assert _tree_snapshot(case["install_root"]) == tree_before
+
+    recovered = _invoke_recovery(case, "--yes")
+
+    assert recovered.returncode == 0, recovered.stderr
+    assert "reconciled     restore_prior_code" in recovered.stdout
+    assert case["active"].is_dir() and not case["active"].is_symlink()
+    assert case["active"].stat().st_ino == original_inode
+    assert installed.read_bytes() == installed_before
+    assert _mode(installed) == installed_mode_before
+    assert not journal_path.exists()
+    assert hashlib.sha256(case["db"].read_bytes()).hexdigest() == database_before
+
+
+def test_recovery_restores_a_directory_missing_after_its_legacy_move(
+    prepared_template, tmp_path, monkeypatch
+):
+    case = _case(prepared_template, tmp_path)
+    original_inode = case["active"].stat().st_ino
+    _hard_crash_after_maintenance(case, monkeypatch)
+    case["active"].unlink()
+
+    plan = apply_upgrade.inspect_recovery(
+        install_root=case["install_root"],
+        active=case["active"],
+        repo=case["repo"],
+    )
+
+    assert plan["active_state"] == "missing_after_legacy_move"
+    apply_upgrade.recover_upgrade(
+        install_root=case["install_root"],
+        active=case["active"],
+        repo=case["repo"],
+        expected_journal_sha256=plan["journal_sha256"],
+    )
+    assert case["active"].is_dir() and not case["active"].is_symlink()
+    assert case["active"].stat().st_ino == original_inode
+
+
+def test_recovery_restores_the_exact_relative_rollback_symlink(
+    prepared_template, tmp_path, monkeypatch
+):
+    case = _case(prepared_template, tmp_path)
+    releases = case["install_root"] / "releases"
+    releases.mkdir(mode=0o700)
+    rollback = releases / case["rollback"]
+    os.replace(case["active"], rollback)
+    rollback.chmod(0o700)
+    marker = rollback / "JANUS_RELEASE.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "commit": case["rollback"],
+                "wheel_sha256": apply_upgrade._wheel_digest(
+                    case["manifest"], "rollback"
+                ),
+            },
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    marker.chmod(0o600)
+    relative_target = f"releases/{case['rollback']}"
+    case["active"].symlink_to(relative_target, target_is_directory=True)
+    _hard_crash_after_maintenance(case, monkeypatch)
+
+    plan = apply_upgrade.inspect_recovery(
+        install_root=case["install_root"],
+        active=case["active"],
+        repo=case["repo"],
+    )
+    apply_upgrade.recover_upgrade(
+        install_root=case["install_root"],
+        active=case["active"],
+        repo=case["repo"],
+        expected_journal_sha256=plan["journal_sha256"],
+    )
+
+    assert case["active"].is_symlink()
+    assert os.readlink(case["active"]) == relative_target
+    assert case["active"].resolve() == rollback
+
+
+def test_recovery_only_clears_the_journal_when_prior_state_is_already_restored(
+    prepared_template, tmp_path, monkeypatch
+):
+    case = _case(prepared_template, tmp_path)
+    _hard_crash_after_maintenance(case, monkeypatch)
+    journal_path = case["install_root"] / "ROLLOUT_IN_PROGRESS.json"
+    journal = json.loads(journal_path.read_text())
+    apply_upgrade._restore_active(
+        case["active"],
+        journal["previous"],
+        allowed_current_targets=(case["install_root"] / "maintenance",),
+    )
+
+    plan = apply_upgrade.inspect_recovery(
+        install_root=case["install_root"],
+        active=case["active"],
+        repo=case["repo"],
+    )
+
+    assert plan["active_state"] == "previous"
+    assert plan["installed_state"] == "before"
+    assert plan["effects"] == [
+        "remove the recovery journal after rechecking prior state"
+    ]
+    apply_upgrade.recover_upgrade(
+        install_root=case["install_root"],
+        active=case["active"],
+        repo=case["repo"],
+        expected_journal_sha256=plan["journal_sha256"],
+    )
+    assert not journal_path.exists()
+
+
+def test_recovery_binds_candidate_bytes_not_the_original_checkout_location(
+    prepared_template, tmp_path, monkeypatch
+):
+    case = _case(prepared_template, tmp_path)
+    _hard_crash_after_maintenance(case, monkeypatch)
+    _rewrite_journal(
+        case,
+        lambda value: value["source"].__setitem__(
+            "repository", "/original/candidate/checkout/is/gone"
+        ),
+    )
+
+    plan = apply_upgrade.inspect_recovery(
+        install_root=case["install_root"],
+        active=case["active"],
+        repo=case["repo"],
+    )
+    apply_upgrade.recover_upgrade(
+        install_root=case["install_root"],
+        active=case["active"],
+        repo=case["repo"],
+        expected_journal_sha256=plan["journal_sha256"],
+    )
+
+    assert case["active"].is_dir() and not case["active"].is_symlink()
+    assert not (case["install_root"] / "ROLLOUT_IN_PROGRESS.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("tamper", "message"),
+    [
+        ("unknown_field", "invalid at <root>"),
+        ("target_escape", "does not match the recovery target"),
+        ("candidate_marker", "candidate release marker does not match"),
+        ("installed_bytes", "installed provenance does not match"),
+        ("maintenance_content", "maintenance environment has unexpected content"),
+        ("active_replacement", "active environment does not match"),
+        ("legacy_replacement", "legacy environment identity does not match"),
+        ("source_commit", "source commit does not match its candidate"),
+        ("receipt_escape", "receipt path is outside"),
+        ("legacy_escape", "legacy environment is outside"),
+        ("receipt_symlink", "is not an owned regular file"),
+        ("receipt_digest", "receipt digest does not match"),
+        ("receipt_schema", "recorded rollout receipt is invalid"),
+        ("receipt_size", "receipt exceeds the size limit"),
+        ("journal_size", "journal exceeds the size limit"),
+        ("journal_mode", "mode 0644"),
+        ("lock_mode", "unsafe rollout lock"),
+    ],
+)
+def test_recovery_refuses_tampered_or_unrecognized_state_without_mutation(
+    prepared_template, tmp_path, monkeypatch, tamper, message
+):
+    case = _case(prepared_template, tmp_path)
+    _hard_crash_after_maintenance(case, monkeypatch)
+    journal_path = case["install_root"] / "ROLLOUT_IN_PROGRESS.json"
+    journal = json.loads(journal_path.read_text())
+
+    if tamper == "unknown_field":
+        _rewrite_journal(case, lambda value: value.__setitem__("unknown", True))
+    elif tamper == "target_escape":
+        _rewrite_journal(
+            case,
+            lambda value: value["target"].__setitem__("installed_record", "/tmp/outside"),
+        )
+    elif tamper == "candidate_marker":
+        marker = Path(journal["candidate"]["environment"]) / "JANUS_RELEASE.json"
+        marker.write_text(json.dumps({"commit": "0" * 40, "wheel_sha256": "0" * 64}))
+        marker.chmod(0o600)
+    elif tamper == "installed_bytes":
+        installed = case["install_root"] / "INSTALLED"
+        installed.write_text("unrecognized provenance\n")
+        installed.chmod(0o600)
+    elif tamper == "maintenance_content":
+        refusal = case["install_root"] / "maintenance" / "bin" / "janus"
+        refusal.write_text("#!/bin/sh\nexit 75\n")
+        refusal.chmod(0o700)
+    elif tamper == "active_replacement":
+        case["active"].unlink()
+        case["active"].mkdir(mode=0o700)
+    elif tamper == "legacy_replacement":
+        legacy = Path(journal["previous"]["legacy"])
+        os.replace(legacy, tmp_path / "original-legacy")
+        legacy.mkdir(mode=0o700)
+    elif tamper == "source_commit":
+        _rewrite_journal(
+            case,
+            lambda value: value["source"].__setitem__("commit", "0" * 40),
+        )
+    elif tamper == "receipt_escape":
+        def escape_receipt(value):
+            value["step"] = "publishing_receipt"
+            value["installed_record_after"] = value["installed_record_before"]
+            value["receipt"] = {"path": "/tmp/outside", "sha256": "0" * 64}
+
+        _rewrite_journal(
+            case,
+            escape_receipt,
+        )
+    elif tamper == "legacy_escape":
+        _rewrite_journal(
+            case,
+            lambda value: value["previous"].__setitem__(
+                "legacy", str(tmp_path / "outside-legacy")
+            ),
+        )
+    elif tamper == "receipt_symlink":
+        outside = tmp_path / "outside-receipt"
+        outside.write_text("do not remove\n")
+        receipt = case["install_root"] / "receipts" / "recorded.json"
+        receipt.symlink_to(outside)
+
+        def link_receipt(value):
+            value["step"] = "publishing_receipt"
+            value["installed_record_after"] = value["installed_record_before"]
+            value["receipt"] = {
+                "path": str(receipt),
+                "sha256": hashlib.sha256(outside.read_bytes()).hexdigest(),
+            }
+
+        _rewrite_journal(
+            case,
+            link_receipt,
+        )
+    elif tamper in {"receipt_digest", "receipt_schema"}:
+        receipt = case["install_root"] / "receipts" / "recorded.json"
+        receipt.write_text("{}\n" if tamper == "receipt_schema" else "not a receipt\n")
+        receipt.chmod(0o600)
+
+        def invalid_receipt(value):
+            value["step"] = "publishing_receipt"
+            value["installed_record_after"] = value["installed_record_before"]
+            value["receipt"] = {
+                "path": str(receipt),
+                "sha256": (
+                    hashlib.sha256(receipt.read_bytes()).hexdigest()
+                    if tamper == "receipt_schema"
+                    else "0" * 64
+                ),
+            }
+
+        _rewrite_journal(case, invalid_receipt)
+    elif tamper == "receipt_size":
+        receipt = case["install_root"] / "receipts" / "recorded.json"
+        receipt.write_bytes(b"x" * (apply_upgrade.MAX_RECOVERY_DOCUMENT_BYTES + 1))
+        receipt.chmod(0o600)
+
+        def oversized_receipt(value):
+            value["step"] = "publishing_receipt"
+            value["installed_record_after"] = value["installed_record_before"]
+            value["receipt"] = {
+                "path": str(receipt),
+                "sha256": hashlib.sha256(receipt.read_bytes()).hexdigest(),
+            }
+
+        _rewrite_journal(case, oversized_receipt)
+    elif tamper == "journal_size":
+        journal_path.write_bytes(b"x" * (apply_upgrade.MAX_RECOVERY_DOCUMENT_BYTES + 1))
+        journal_path.chmod(0o600)
+    elif tamper == "journal_mode":
+        journal_path.chmod(0o644)
+    elif tamper == "lock_mode":
+        (case["install_root"] / "rollout.lock").chmod(0o644)
+    else:  # pragma: no cover - parametrization is closed above
+        raise AssertionError(tamper)
+
+    before = _tree_snapshot(case["install_root"])
+    with pytest.raises(apply_upgrade.RolloutError, match=message):
+        apply_upgrade.inspect_recovery(
+            install_root=case["install_root"],
+            active=case["active"],
+            repo=case["repo"],
+        )
+    assert _tree_snapshot(case["install_root"]) == before
+
+
 def test_maintenance_switch_fsync_failure_restores_legacy_directory(
     prepared_template, tmp_path, monkeypatch
 ):
@@ -558,7 +984,11 @@ def test_maintenance_restore_preserves_relative_symlink_target(
     )
 
     apply_upgrade._enter_maintenance(case["active"], maintenance, previous)
-    apply_upgrade._restore_active(case["active"], previous)
+    apply_upgrade._restore_active(
+        case["active"],
+        previous,
+        allowed_current_targets=(maintenance,),
+    )
 
     assert os.readlink(case["active"]) == "prior"
     assert case["active"].resolve() == prior_target
@@ -745,7 +1175,7 @@ def test_hard_exit_after_installed_write_journals_exact_prior_provenance(
     journal = json.loads(
         (case["install_root"] / "ROLLOUT_IN_PROGRESS.json").read_text()
     )
-    assert journal["step"] == "activating"
+    assert journal["step"] == "candidate_active"
     assert case["active"].is_symlink()
     assert installed.read_bytes() != installed_before
     assert journal["installed_record_before"] == {
@@ -754,15 +1184,145 @@ def test_hard_exit_after_installed_write_journals_exact_prior_provenance(
         "path": str(installed),
         "sha256": hashlib.sha256(installed_before).hexdigest(),
     }
-    apply_upgrade._restore_active(case["active"], journal["previous"])
-    apply_upgrade._restore_installed_record(
-        journal["installed_record_before"],
-        expected_path=installed,
+    plan = apply_upgrade.inspect_recovery(
+        install_root=case["install_root"],
+        active=case["active"],
+        repo=case["repo"],
+    )
+    assert plan["resolution"] == "restore_prior_code"
+    assert plan["active_state"] == "candidate"
+    assert plan["installed_state"] == "after"
+    apply_upgrade.recover_upgrade(
+        install_root=case["install_root"],
+        active=case["active"],
+        repo=case["repo"],
+        expected_journal_sha256=plan["journal_sha256"],
     )
     assert case["active"].is_dir() and not case["active"].is_symlink()
     assert case["active"].stat().st_ino == active_inode_before
     assert installed.read_bytes() == installed_before
     assert _mode(installed) == installed_mode_before
+    assert not (case["install_root"] / "ROLLOUT_IN_PROGRESS.json").exists()
+
+
+def test_recovery_after_migration_restores_code_but_never_the_database(
+    prepared_template, tmp_path, monkeypatch
+):
+    case = _case(prepared_template, tmp_path)
+    active_inode_before = case["active"].stat().st_ino
+    installed = case["install_root"] / "INSTALLED"
+    installed_before = installed.read_bytes()
+    monkeypatch.setattr(apply_upgrade, "_open_database_holders", lambda db: [])
+    real_verify = apply_upgrade._verify_environment
+
+    def hard_exit_after_candidate(*args, **kwargs):
+        result = real_verify(*args, **kwargs)
+        if kwargs["label"] == "candidate":
+            os._exit(91)
+        return result
+
+    monkeypatch.setattr(apply_upgrade, "_verify_environment", hard_exit_after_candidate)
+    child = os.fork()
+    if child == 0:
+        try:
+            apply_upgrade.apply_upgrade(
+                bundle=case["bundle"],
+                db=case["db"],
+                install_root=case["install_root"],
+                active=case["active"],
+                wrapper=case["wrapper"],
+                repo=case["repo"],
+            )
+        except BaseException:
+            os._exit(92)
+        os._exit(93)
+    _, status = os.waitpid(child, 0)
+    assert os.waitstatus_to_exitcode(status) == 91
+    with sqlite3.connect(case["db"]) as connection:
+        migrations_before_recovery = [
+            row[0]
+            for row in connection.execute(
+                "SELECT version FROM schema_migrations ORDER BY version"
+            )
+        ]
+    assert migrations_before_recovery[-1] == "0003_bound_rulings_require_digest"
+
+    plan = apply_upgrade.inspect_recovery(
+        install_root=case["install_root"],
+        active=case["active"],
+        repo=case["repo"],
+    )
+    apply_upgrade.recover_upgrade(
+        install_root=case["install_root"],
+        active=case["active"],
+        repo=case["repo"],
+        expected_journal_sha256=plan["journal_sha256"],
+    )
+
+    with sqlite3.connect(case["db"]) as connection:
+        migrations_after_recovery = [
+            row[0]
+            for row in connection.execute(
+                "SELECT version FROM schema_migrations ORDER BY version"
+            )
+        ]
+    assert migrations_after_recovery == migrations_before_recovery
+    assert case["active"].is_dir() and not case["active"].is_symlink()
+    assert case["active"].stat().st_ino == active_inode_before
+    assert installed.read_bytes() == installed_before
+    assert not (case["install_root"] / "ROLLOUT_IN_PROGRESS.json").exists()
+
+
+def test_recovery_finishes_forward_after_a_durable_success_receipt(
+    prepared_template, tmp_path, monkeypatch
+):
+    case = _case(prepared_template, tmp_path)
+    monkeypatch.setattr(apply_upgrade, "_open_database_holders", lambda db: [])
+    real_json = apply_upgrade._atomic_json
+
+    def hard_exit_after_receipt(path, document, schema=None):
+        real_json(path, document, schema)
+        if path.parent.name == "receipts":
+            os._exit(91)
+
+    monkeypatch.setattr(apply_upgrade, "_atomic_json", hard_exit_after_receipt)
+    child = os.fork()
+    if child == 0:
+        try:
+            apply_upgrade.apply_upgrade(
+                bundle=case["bundle"],
+                db=case["db"],
+                install_root=case["install_root"],
+                active=case["active"],
+                wrapper=case["wrapper"],
+                repo=case["repo"],
+            )
+        except BaseException:
+            os._exit(92)
+        os._exit(93)
+    _, status = os.waitpid(child, 0)
+    assert os.waitstatus_to_exitcode(status) == 91
+    receipts = list((case["install_root"] / "receipts").glob("*.json"))
+    assert len(receipts) == 1
+    receipt_before = receipts[0].read_bytes()
+
+    preview = _invoke_recovery(case)
+
+    assert preview.returncode == 0, preview.stderr
+    assert "reconciliation complete_forward" in preview.stdout
+    assert "receipt        valid" in preview.stdout
+    reconciled = _invoke_recovery(case, "--yes")
+    assert reconciled.returncode == 0, reconciled.stderr
+    assert "reconciled     complete_forward" in reconciled.stdout
+    assert case["active"].is_symlink()
+    assert case["active"].resolve() == case["install_root"] / "releases" / case[
+        "candidate"
+    ]
+    assert receipts[0].read_bytes() == receipt_before
+    assert f"commit          {case['candidate']}" in (
+        case["install_root"] / "INSTALLED"
+    ).read_text()
+    assert not (case["install_root"] / "ROLLOUT_IN_PROGRESS.json").exists()
 
 
 def test_rollout_lock_and_unfinished_journal_fail_closed(prepared_template, tmp_path):

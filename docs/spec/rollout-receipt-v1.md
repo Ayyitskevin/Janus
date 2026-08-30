@@ -33,6 +33,12 @@ the original mode, and the absolute target path. The switch refuses if the activ
 path no longer has the recorded identity. A crash after candidate provenance is
 written therefore leaves enough private, integrity-checked state to restore the
 prior provenance exactly rather than reconstructing it from a commit alone.
+The journal itself is the closed
+[`janus.rollout-in-progress.v1`](rollout-in-progress-v1.md) contract. Recovery
+deletes neither journal nor exact success receipt until it can prove whether the
+operation is incomplete or durably complete. A receipt that validates against
+this schema and the journal, with matching candidate activation and provenance,
+is a completed-forward outcome rather than something to roll back.
 
 ## Freshness and timing
 
