@@ -2,7 +2,7 @@
 
 Janus has one governing rule:
 
-> Janus records pending authority; it does not grant authority.
+> Janus records decision authority; it does not grant execution authority.
 
 Contributions are welcome when they preserve that distinction and keep the
 local-first interface inexpensive for agents and operators to use.
@@ -10,21 +10,24 @@ local-first interface inexpensive for agents and operators to use.
 ## Before changing the model
 
 Read [the vision](docs/VISION.md), [the gate-model decision](docs/adr/0001-the-gate-model.md),
+[the delegated-decision progression](docs/adr/0006-delegated-decision-progression.md),
 and [the threat model](docs/THREAT_MODEL.md) before changing gate state,
-bindings, rulings, checks, exports, migrations, attribution, or a cross-module
-seam. The repository contract in [AGENTS.md](AGENTS.md) applies to human- and
-agent-authored changes alike.
+bindings, rulings, verdicts, checks, exports, migrations, attribution, model
+output handling, or a cross-module seam. The repository contract in
+[AGENTS.md](AGENTS.md) applies to human- and agent-authored changes alike.
 
-The three invariants are:
+The four invariants are:
 
 1. A gate is open or closed, never both.
-2. A ruling binds bytes, not names.
-3. Reading a ruling is not authority.
+2. Every terminal decision binds bytes, not names.
+3. Human rulings and delegated verdicts never share provenance.
+4. Reading a decision is not execution authority.
 
-Do not add automatic approval, inferred consent, human-bypassing risk scores,
-a policy engine, priority integers, artifact storage, task tracking, or remote
-writes. A proposal that needs one of those belongs in a design discussion, not
-an implementation patch.
+Do not add inferred consent, machine attribution as a human, autonomous
+RED-class decisions, confidence-only eligibility, priority integers, artifact
+storage, task tracking, or remote writes. Autonomous behavior must follow ADR
+0006's separate stages and explicit delegation contract; one PR may not skip
+from data capture to activation.
 
 ## Development setup
 

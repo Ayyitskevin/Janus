@@ -2,13 +2,18 @@
 
 [![CI](https://github.com/Ayyitskevin/Janus/actions/workflows/ci.yml/badge.svg)](https://github.com/Ayyitskevin/Janus/actions/workflows/ci.yml)
 
-**Every gate, both faces.**
+**Every gate, every accountable face.**
 
-Janus is a local-first ledger of the decisions an AI fleet is waiting on a human
-to make. It records what was asked, what it was asked about, what decays while
-it waits, and what was eventually ruled — and it never decides anything itself.
+Janus is a local-first ledger of the decisions an AI fleet is waiting to have
+made. It records what was asked, what it was asked about, what decays while it
+waits, and what was eventually decided with exact provenance.
 
-> Janus records pending authority; it does not grant authority.
+> Janus records decision authority; it does not grant execution authority.
+
+The current release remains human-only. [ADR 0006](docs/adr/0006-delegated-decision-progression.md)
+proposes a measured progression from learnable human records through shadow and
+recommendation modes to explicitly delegated machine verdicts. No autonomous
+verdict is implemented or activated yet.
 
 ## Quickstart
 
@@ -221,7 +226,10 @@ human attention is the one nobody measures.
 
 ## What a gate is
 
-One decision, raised by one agent, that only a human can make.
+One decision, raised by one agent, that currently waits for a human ruling.
+Under ADR 0006, future gates may be eligible for a separately identified
+machine verdict only when a human-created delegation and deterministic safety
+rules both allow it.
 
 | Field | Meaning |
 | --- | --- |
@@ -268,14 +276,18 @@ insistent.
 
 ## What Janus never does
 
-- **It never grants authority.** Reading an approval out of Janus is not
-  permission to act. The system that acts re-verifies the binding digest itself.
-  An approval record is evidence that a human ruled, and evidence does not
-  confer authority.
-- **It never decides.** There is no auto-approve, no "low risk so skip the
-  human", no policy engine, no inferred consent. The entire value of the record
-  is that a person made the call; a rule that decides on their behalf destroys
-  the only thing being stored.
+- **It never grants execution authority.** Reading a human ruling or future
+  delegated verdict out of Janus is not permission to act. The system that acts
+  re-verifies the binding, its own authorization, and every execution
+  precondition.
+- **It never infers delegation.** A confidence score, model preference, or
+  historical pattern cannot widen an explicit human-created envelope. Unknown,
+  expired, or drifted scope means abstain.
+- **It never impersonates a person.** Human rulings and machine predictions or
+  verdicts use separate records, identities, and language.
+- **It never delegates fleet RED classes under current doctrine.** Security,
+  money/legal, live-data migration, infrastructure, and public or irreversible
+  effects still require the human.
 - **It never owns the work.** Task state, assignment, and project structure
   belong to the operator workspace. Janus holds the gate, not the job.
 - **It never holds the artifact.** Only its digest, and enough identity to find
