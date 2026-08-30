@@ -155,6 +155,14 @@ same-gate linkage, matching human provenance, and one feedback event per ruling.
 M6 cannot close a gate, select an option for a human, invoke a check, or trigger
 a consumer.
 
+The first implementation is specified in
+`docs/spec/shadow-predictions-v1.md`. Predictions are typed append-only audit
+events, are refused after a terminal event, and are absent from the default
+board and `show`. The loopback Vulcan adapter uses strict structured output and
+records the public catalog digest; because Vulcan does not expose the hidden
+provider-native model identity, that provenance is explicitly sufficient only
+for shadow evaluation and cannot satisfy M8 activation.
+
 ### M7 — recommendation
 
 - Display the latest applicable prediction on `show` and the board.

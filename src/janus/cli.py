@@ -16,7 +16,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import __version__, core
+from . import __version__, core, decision_engine
 from . import export as stable_export
 from .core import JanusError
 
@@ -268,6 +268,68 @@ def cmd_context(a, conn) -> int:
         f"@ {snapshot['context_sha256'][:16]} (by {actor})"
     )
     print("  unspecified facts remain unknown; unknown never means safe")
+    return 0
+
+
+def cmd_predict(a, conn) -> int:
+    if not a.shadow:
+        raise JanusError(
+            "only shadow prediction exists; pass --shadow to acknowledge that "
+            "this cannot close a gate or authorize action"
+        )
+    actor = core.seat_actor(a.seat)
+    vulcan_seat = a.seat.strip().lower() if a.seat else actor
+    adapter = decision_engine.VulcanAdapter(
+        a.model,
+        seat=vulcan_seat,
+        base_url=a.base_url,
+        timeout_seconds=a.timeout,
+        max_tokens=a.max_tokens,
+    )
+    prediction = decision_engine.record_shadow_prediction(
+        conn,
+        a.gate_id,
+        engine=decision_engine.DecisionEngine(adapter),
+        actor=actor,
+    )
+    if a.json:
+        print(json.dumps(prediction, indent=2))
+        return 0
+    print(
+        f"shadow prediction #{prediction['event_id']} for {a.gate_id}: "
+        f"{prediction['verdict']}"
+    )
+    print(f"  reasons: {', '.join(prediction['reason_codes'])}")
+    print(f"  {prediction['summary']}")
+    print("  SHADOW ONLY — gate state is unchanged; this grants no execution authority")
+    return 0
+
+
+def cmd_shadow_report(a, conn) -> int:
+    report = decision_engine.chronological_evaluation(conn)
+    if a.json:
+        print(json.dumps(report, indent=2))
+        return 0
+    print(f"JANUS SHADOW EVALUATION — {report['generated_at']}")
+    print(
+        f"  labeled predictions {report['labeled_predictions']} of "
+        f"{report['human_rulings']} human ruling(s) · "
+        f"not evaluated {report['not_evaluated_predictions']}"
+    )
+    for label in (
+        "abstentions",
+        "coverage",
+        "agreement",
+        "unsafe_false_approvals",
+        "incorrect_denials",
+    ):
+        measure = report[label]
+        print(f"  {label:<24}{measure['count']} of {measure['denominator']}")
+    print(
+        f"  human labels            approvals {report['human_approvals']} · "
+        f"refusals {report['human_refusals']}"
+    )
+    print("  Chronological labels only. Shadow output cannot close a gate or authorize action.")
     return 0
 
 
@@ -1087,6 +1149,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="identifier or locator only, not raw evidence or secret content; repeatable",
     )
     ctx.set_defaults(fn=cmd_context)
+
+    pred = sub.add_parser(
+        "predict",
+        help="append a non-terminal shadow prediction through loopback Vulcan",
+    )
+    pred.add_argument("gate_id")
+    pred.add_argument("--shadow", action="store_true",
+                      help="acknowledge the prediction cannot decide or authorize")
+    pred.add_argument("--model", default="simple",
+                      help="local Ollama-backed Vulcan alias (default: simple)")
+    pred.add_argument("--base-url", default="http://127.0.0.1:8140",
+                      help="explicit loopback Vulcan origin")
+    pred.add_argument("--timeout", type=float, default=90.0,
+                      help="single-call timeout in seconds (max 120)")
+    pred.add_argument("--max-tokens", type=int, default=2048,
+                      help="completion cap (128-8192; default: 2048)")
+    pred.add_argument("--json", action="store_true")
+    pred.set_defaults(fn=cmd_predict)
+
+    report = sub.add_parser(
+        "shadow-report",
+        help="chronologically compare shadow predictions with later human rulings",
+    )
+    report.add_argument("--json", action="store_true")
+    report.set_defaults(fn=cmd_shadow_report)
 
     d = sub.add_parser("decide", help="rule on a gate (the human's verb)")
     d.add_argument("gate_id")
