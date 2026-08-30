@@ -401,6 +401,86 @@ def test_database_holder_refusal_restores_the_original_active_environment(
     assert not (case["install_root"] / "ROLLOUT_IN_PROGRESS.json").exists()
 
 
+@pytest.mark.parametrize("active_kind", ["directory", "symlink"])
+def test_hard_crash_after_maintenance_switch_leaves_exact_previous_environment(
+    prepared_template, tmp_path, monkeypatch, active_kind
+):
+    case = _case(prepared_template, tmp_path)
+    prior_target = None
+    if active_kind == "symlink":
+        releases_root = case["install_root"] / "releases"
+        releases_root.mkdir(mode=0o700)
+        releases_root.chmod(0o700)
+        prior_target = releases_root / case["rollback"]
+        os.replace(case["active"], prior_target)
+        marker = prior_target / "JANUS_RELEASE.json"
+        marker.write_text(
+            json.dumps(
+                {
+                    "commit": case["rollback"],
+                    "wheel_sha256": apply_upgrade._wheel_digest(
+                        case["manifest"], "rollback"
+                    ),
+                }
+            )
+            + "\n"
+        )
+        marker.chmod(0o600)
+        case["active"].symlink_to(prior_target)
+    original = case["active"].lstat()
+    fake_candidate = tmp_path / "candidate"
+    fake_rollback = tmp_path / "rollback"
+    fake_candidate.mkdir()
+    fake_rollback.mkdir()
+    releases = iter((fake_candidate, fake_rollback))
+    monkeypatch.setattr(apply_upgrade, "_stage_release", lambda **kwargs: next(releases))
+    real_enter_maintenance = apply_upgrade._enter_maintenance
+
+    def crash_after_switch(*args, **kwargs):
+        real_enter_maintenance(*args, **kwargs)
+        os._exit(91)
+
+    monkeypatch.setattr(apply_upgrade, "_enter_maintenance", crash_after_switch)
+    child = os.fork()
+    if child == 0:
+        try:
+            apply_upgrade.apply_upgrade(
+                bundle=case["bundle"],
+                db=case["db"],
+                install_root=case["install_root"],
+                active=case["active"],
+                wrapper=case["wrapper"],
+                repo=case["repo"],
+            )
+        except BaseException:
+            os._exit(92)
+        os._exit(93)
+
+    _, status = os.waitpid(child, 0)
+    assert os.waitstatus_to_exitcode(status) == 91
+    journal = json.loads(
+        (case["install_root"] / "ROLLOUT_IN_PROGRESS.json").read_text()
+    )
+    previous = journal["previous"]
+    assert journal["step"] == "entering_maintenance"
+    assert previous == {
+        "kind": active_kind,
+        "target": str(prior_target) if prior_target is not None else None,
+        "legacy": previous["legacy"],
+        "device": original.st_dev,
+        "inode": original.st_ino,
+    }
+    if active_kind == "directory":
+        legacy = Path(previous["legacy"])
+        assert legacy.is_dir()
+        assert legacy.stat().st_dev == original.st_dev
+        assert legacy.stat().st_ino == original.st_ino
+    else:
+        assert previous["legacy"] is None
+    assert case["active"].is_symlink()
+    assert case["active"].resolve() == case["install_root"] / "maintenance"
+
+
 def test_maintenance_switch_fsync_failure_restores_legacy_directory(
     prepared_template, tmp_path, monkeypatch
 ):
@@ -425,15 +505,146 @@ def test_maintenance_switch_fsync_failure_restores_legacy_directory(
         "_fsync_directory",
         fail_first_fsync,
     )
+    previous = apply_upgrade._plan_maintenance(
+        case["active"], legacy, case["rollback"]
+    )
 
     with pytest.raises(OSError, match="injected"):
-        apply_upgrade._enter_maintenance(
-            case["active"], maintenance, legacy, case["rollback"]
-        )
+        apply_upgrade._enter_maintenance(case["active"], maintenance, previous)
 
     assert case["active"].is_dir() and not case["active"].is_symlink()
     assert case["active"].stat().st_ino == original_inode
     assert list(legacy.iterdir()) == []
+
+
+def test_maintenance_refuses_when_active_changes_after_journal_plan(
+    prepared_template, tmp_path
+):
+    case = _case(prepared_template, tmp_path)
+    maintenance = case["install_root"] / "maintenance"
+    maintenance.mkdir(mode=0o700)
+    legacy = case["install_root"] / "legacy"
+    legacy.mkdir(mode=0o700)
+    previous = apply_upgrade._plan_maintenance(
+        case["active"], legacy, case["rollback"]
+    )
+    replacement = tmp_path / "replacement"
+    replacement.mkdir()
+    original = tmp_path / "original-active"
+    os.replace(case["active"], original)
+    os.replace(replacement, case["active"])
+
+    with pytest.raises(apply_upgrade.RolloutError, match="changed after recovery state"):
+        apply_upgrade._enter_maintenance(case["active"], maintenance, previous)
+
+    assert case["active"].is_dir() and not case["active"].is_symlink()
+    assert list(legacy.iterdir()) == []
+
+
+def test_maintenance_restore_preserves_relative_symlink_target(
+    prepared_template, tmp_path
+):
+    case = _case(prepared_template, tmp_path)
+    prior_target = case["install_root"] / "prior"
+    os.replace(case["active"], prior_target)
+    case["active"].symlink_to("prior", target_is_directory=True)
+    maintenance = case["install_root"] / "maintenance"
+    maintenance.mkdir(mode=0o700)
+    legacy = case["install_root"] / "legacy"
+    legacy.mkdir(mode=0o700)
+    previous = apply_upgrade._plan_maintenance(
+        case["active"], legacy, case["rollback"]
+    )
+
+    apply_upgrade._enter_maintenance(case["active"], maintenance, previous)
+    apply_upgrade._restore_active(case["active"], previous)
+
+    assert os.readlink(case["active"]) == "prior"
+    assert case["active"].resolve() == prior_target
+
+
+def test_initial_journal_failure_does_not_mutate_active(
+    prepared_template, tmp_path, monkeypatch
+):
+    case = _case(prepared_template, tmp_path)
+    original_inode = case["active"].stat().st_ino
+    fake_candidate = tmp_path / "candidate"
+    fake_rollback = tmp_path / "rollback"
+    fake_candidate.mkdir()
+    fake_rollback.mkdir()
+    releases = iter((fake_candidate, fake_rollback))
+    monkeypatch.setattr(apply_upgrade, "_stage_release", lambda **kwargs: next(releases))
+    real_json = apply_upgrade._atomic_json
+
+    def fail_after_initial_journal(path, document, schema=None):
+        real_json(path, document, schema)
+        if path.name == "ROLLOUT_IN_PROGRESS.json":
+            raise OSError("injected initial journal fsync failure")
+
+    monkeypatch.setattr(apply_upgrade, "_atomic_json", fail_after_initial_journal)
+
+    with pytest.raises(OSError, match="injected initial journal"):
+        apply_upgrade.apply_upgrade(
+            bundle=case["bundle"],
+            db=case["db"],
+            install_root=case["install_root"],
+            active=case["active"],
+            wrapper=case["wrapper"],
+            repo=case["repo"],
+        )
+
+    assert case["active"].is_dir() and not case["active"].is_symlink()
+    assert case["active"].stat().st_ino == original_inode
+    assert not (case["install_root"] / "ROLLOUT_IN_PROGRESS.json").exists()
+
+
+def test_apply_preserves_journal_on_active_identity_race(
+    prepared_template, tmp_path, monkeypatch
+):
+    case = _case(prepared_template, tmp_path)
+    original = case["active"].stat()
+    fake_candidate = tmp_path / "candidate"
+    fake_rollback = tmp_path / "rollback"
+    fake_candidate.mkdir()
+    fake_rollback.mkdir()
+    releases = iter((fake_candidate, fake_rollback))
+    monkeypatch.setattr(apply_upgrade, "_stage_release", lambda **kwargs: next(releases))
+    real_json = apply_upgrade._atomic_json
+    replacement_inode = None
+
+    def replace_active_after_initial_journal(path, document, schema=None):
+        nonlocal replacement_inode
+        real_json(path, document, schema)
+        if path.name == "ROLLOUT_IN_PROGRESS.json" and replacement_inode is None:
+            original_path = tmp_path / "original-active"
+            replacement = tmp_path / "replacement"
+            replacement.mkdir()
+            os.replace(case["active"], original_path)
+            os.replace(replacement, case["active"])
+            replacement_inode = case["active"].stat().st_ino
+
+    monkeypatch.setattr(
+        apply_upgrade,
+        "_atomic_json",
+        replace_active_after_initial_journal,
+    )
+
+    with pytest.raises(apply_upgrade.RolloutError, match="recovery also failed"):
+        apply_upgrade.apply_upgrade(
+            bundle=case["bundle"],
+            db=case["db"],
+            install_root=case["install_root"],
+            active=case["active"],
+            wrapper=case["wrapper"],
+            repo=case["repo"],
+        )
+
+    journal_path = case["install_root"] / "ROLLOUT_IN_PROGRESS.json"
+    journal = json.loads(journal_path.read_text())
+    assert journal["step"] == "entering_maintenance"
+    assert journal["previous"]["device"] == original.st_dev
+    assert journal["previous"]["inode"] == original.st_ino
+    assert case["active"].stat().st_ino == replacement_inode
 
 
 @pytest.mark.parametrize("failure_point", ["installed", "receipt"])
