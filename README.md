@@ -179,8 +179,11 @@ provenance states, and exact reconciliation effects. After reviewing that
 output, repeat with `--yes`. Recovery revalidates the same digest under the
 rollout lock. An incomplete rollout restores only the exact prior code entry
 point and `INSTALLED` bytes; a fully published, exact success receipt completes
-forward by removing the stale journal. Unknown state is left untouched. The
-database backup is never restored automatically. The closed journal contract
+forward by removing the stale journal. A receipt-publication or journal-cleanup
+error preserves matching candidate state and refuses a retry instead of
+manufacturing a code rollback around an already-migrated database. Unknown state
+is left untouched. The database backup is never restored automatically. The
+closed journal contract
 and refusal rules are in the [rollout recovery journal v1
 specification](docs/spec/rollout-in-progress-v1.md).
 
