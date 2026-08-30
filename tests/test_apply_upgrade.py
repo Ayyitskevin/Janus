@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import importlib.util
 import json
@@ -700,6 +701,68 @@ def test_post_migration_write_failure_restores_code_and_removes_success_receipt(
     assert (case["install_root"] / "INSTALLED").read_bytes() == installed_before
     assert list((case["install_root"] / "receipts").iterdir()) == []
     assert not (case["install_root"] / "ROLLOUT_IN_PROGRESS.json").exists()
+
+
+def test_hard_exit_after_installed_write_journals_exact_prior_provenance(
+    prepared_template, tmp_path, monkeypatch
+):
+    case = _case(prepared_template, tmp_path)
+    installed = case["install_root"] / "INSTALLED"
+    active_inode_before = case["active"].stat().st_ino
+    installed_before = installed.read_bytes()
+    installed_mode_before = _mode(installed)
+    monkeypatch.setattr(apply_upgrade, "_open_database_holders", lambda db: [])
+    real_write = apply_upgrade._atomic_private_file
+
+    def hard_exit_after_installed_write(path, content, *, mode=0o600):
+        real_write(path, content, mode=mode)
+        if path == installed:
+            os._exit(91)
+
+    monkeypatch.setattr(
+        apply_upgrade,
+        "_atomic_private_file",
+        hard_exit_after_installed_write,
+    )
+    child = os.fork()
+    if child == 0:
+        try:
+            apply_upgrade.apply_upgrade(
+                bundle=case["bundle"],
+                db=case["db"],
+                install_root=case["install_root"],
+                active=case["active"],
+                wrapper=case["wrapper"],
+                repo=case["repo"],
+            )
+        except BaseException:
+            os._exit(92)
+        os._exit(93)
+
+    _, status = os.waitpid(child, 0)
+    assert os.waitstatus_to_exitcode(status) == 91
+    monkeypatch.setattr(apply_upgrade, "_atomic_private_file", real_write)
+    journal = json.loads(
+        (case["install_root"] / "ROLLOUT_IN_PROGRESS.json").read_text()
+    )
+    assert journal["step"] == "activating"
+    assert case["active"].is_symlink()
+    assert installed.read_bytes() != installed_before
+    assert journal["installed_record_before"] == {
+        "content_base64": base64.b64encode(installed_before).decode("ascii"),
+        "mode": f"{installed_mode_before:04o}",
+        "path": str(installed),
+        "sha256": hashlib.sha256(installed_before).hexdigest(),
+    }
+    apply_upgrade._restore_active(case["active"], journal["previous"])
+    apply_upgrade._restore_installed_record(
+        journal["installed_record_before"],
+        expected_path=installed,
+    )
+    assert case["active"].is_dir() and not case["active"].is_symlink()
+    assert case["active"].stat().st_ino == active_inode_before
+    assert installed.read_bytes() == installed_before
+    assert _mode(installed) == installed_mode_before
 
 
 def test_rollout_lock_and_unfinished_journal_fail_closed(prepared_template, tmp_path):
