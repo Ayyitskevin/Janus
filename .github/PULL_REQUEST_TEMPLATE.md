@@ -7,8 +7,8 @@
 <!-- Name affected invariants/interfaces. State explicitly if there is no contract impact. -->
 
 - [ ] I read `docs/VISION.md`, `docs/THREAT_MODEL.md`, and the relevant ADRs for any domain-model or trust-boundary change.
-- [ ] This change preserves: one terminal gate state, byte-bound rulings, and “a ruling is not authority.”
-- [ ] This change adds no automatic approval, inferred consent, priority score, policy engine, artifact storage, or remote write path.
+- [ ] This change preserves: one terminal gate state, byte-bound decisions, explicit human/machine provenance, and “a decision is not execution authority.”
+- [ ] Any autonomous behavior follows ADR 0006's staged progression and explicit delegation contract; this change adds no inferred consent, confidence-only eligibility, machine impersonation, autonomous RED-class decision, priority score, artifact storage, or remote write path.
 - [ ] I used only synthetic, non-sensitive fixtures and removed gate text, locators, stored commands, credentials, private paths, and operator metadata from the PR.
 
 ## Verification
@@ -22,6 +22,6 @@
 
 ## Review and operations
 
-- [ ] I identified any state-machine, binding, trigger, migration, attribution, export, or cross-module-seam change that requires independent and human review.
+- [ ] I identified any state-machine, binding, trigger, migration, attribution, delegation, model-output, export, or cross-module-seam change that requires independent and human review.
 - [ ] I documented compatibility limits, skipped verification, and follow-up work.
 - [ ] This PR does not treat merge as authority for permission repair, migration, installation, stored-check execution, activation, recovery, restore, or deployment.

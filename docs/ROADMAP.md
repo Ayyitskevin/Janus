@@ -198,3 +198,50 @@ Janus read its own ledger as permission.
   had a measured consumer closed it again.
 - Multi-option gates, if M0 defers them.
 - Any remote bind or second user.
+
+## M5–M8 — delegated decision progression — **PROPOSED**
+
+ADR 0006 supersedes the original permanent rejection of auto-approval without
+weakening append-only history, byte binding, or independent execution
+authorization. Each milestone is a separate reviewed PR and remains dormant
+until its own exit criteria are met.
+
+### M5 — learnable records
+
+- Append-only canonical decision-context snapshots.
+- Structured reason codes and counterfactual feedback attached to human
+  rulings without changing the ruling record.
+- Stable export coverage for the new records.
+
+**Exit:** real approvals and refusals can be reconstructed from only the facts
+available before each ruling, with missing facts represented as unknown.
+
+### M6 — shadow prediction
+
+- A deep decision-engine module with deterministic eligibility.
+- Loopback Vulcan and in-memory inference adapters.
+- Append-only, non-terminal predictions with complete provenance.
+- Chronological evaluation against later human rulings.
+
+**Exit:** shadow predictions cannot close gates or invoke consumers, and the
+evaluation reports every denominator including abstentions.
+
+### M7 — recommendation
+
+- Applicable predictions on `show` and the operator board.
+- Human decisions remain independently recorded.
+- Drift and calibration measurements by project and action class.
+
+**Exit:** the operator has used recommendations on real gates and the measured
+record supports or rejects advancement without extrapolation.
+
+### M8 — scoped autonomy
+
+- Human-created, expiring, revocable delegation envelopes.
+- Separate append-only delegated verdicts with database-enforced terminal
+  exclusivity and complete artifact/context/policy/model binding.
+- An off-by-default activation and immediate fallback to shadow.
+
+**Exit:** a separately reviewed activation packet demonstrates the chosen
+thresholds on held-out chronological decisions, Kevin approves the exact scope,
+and the first narrow GREEN canary is measured after activation.

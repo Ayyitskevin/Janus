@@ -78,9 +78,9 @@ both its journaled digest and the closed receipt schema. An invalid or unknown
 state remains in maintenance for inspection; recovery never guesses, follows a
 journal path outside the install root for mutation, or restores database bytes.
 
-This is inherited, not chosen, and it is why Janus must never enter the
-permission path. A system that treats a Janus read as sufficient grounds to act
-would be trusting a store that a same-OS-user process can rewrite.
+This is inherited, not chosen, and it is why Janus must never become sufficient
+permission to act. A system that treats a Janus read as sufficient grounds to
+act would be trusting a store that a same-OS-user process can rewrite.
 
 ## What is actually at risk
 
@@ -165,11 +165,36 @@ against different bytes. Mitigated by binding a SHA-256 at ruling time, recorded
 by Janus and enforced by the consumer — never by Janus, which would put it in
 the permission path.
 
-**Becoming a decision-maker.** The catastrophic failure is not a leak. It is a
-future version that infers consent, scores risk to skip a human, or auto-approves
-anything. The record's entire value is that a person decided. `AGENTS.md`
-rejects these at every maturity level, and this file restates it because threat
-models are read by people who skip contracts.
+**Unaccountable decision-making.** ADR 0006 permits a progression toward
+delegated machine verdicts, which creates the project's sharpest new threat: a
+model infers consent, expands its scope, or is rendered as though Kevin
+personally ruled. Delegation eligibility must therefore be deterministic,
+closed, expiring, and evaluated outside the model. Predictions, human rulings,
+and delegated verdicts have separate provenance. Missing or drifted context,
+policy, model, delegation, or artifact identity fails closed to abstention.
+
+**Prompt injection through decision context.** Gate text, evidence summaries,
+and artifact metadata can contain instructions aimed at the model. They are
+untrusted data even when they originated inside the fleet. The decision engine
+passes a minimized closed document, gives the model no tools or credentials,
+validates its response against a closed schema, and applies eligibility again
+after inference. Stored decay and delivery checks are executable text and are
+never sent to or invoked by the model.
+
+**Poisoned learning history.** A prediction agreeing with a later prediction is
+not evidence about the operator. Only attributed human rulings label operator
+behavior. Synthetic cases can test mechanics but cannot count toward activation
+quality, and autonomous outcomes never feed back as human labels.
+
+**Delegation replay and drift.** A once-valid delegation can expire, be revoked,
+or refer to different policy bytes. Every delegated verdict binds the exact
+delegation, policy, prompt, model, decision context, and artifact identities.
+Any mismatch makes the old verdict historical evidence only.
+
+**Confused-deputy execution.** A valid delegated verdict still does not prove an
+action is authorized. Janus never invokes the execution module. Consumers must
+verify their own authority and preconditions, so compromising Janus alone is
+not enough to execute.
 
 ## Explicitly out of scope
 
