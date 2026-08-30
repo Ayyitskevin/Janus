@@ -61,6 +61,12 @@ The implementation is a deep module behind that interface:
    environment and provenance record on handled failure. The switch revalidates
    the recorded identity immediately before mutation, so crash recovery is
    explicit rather than guessing which path moved or reconstructing provenance.
+9. expose one recovery interface that inspects by default and requires `--yes`
+   to reconcile the displayed journal digest. It validates a closed journal,
+   exact release markers, path containment, the preserved inode, both provenance
+   byte sets, and any success receipt before changing a path. A durable exact
+   receipt plus matching candidate state completes forward; otherwise recovery
+   restores prior code and provenance. Unknown state is never overwritten.
 
 The first rollout may encounter a real directory at the active path rather
 than a symbolic link. It preserves that environment under a private legacy
@@ -99,6 +105,9 @@ depends on branch-based installation.
   failed or crashed rollout cannot masquerade as a healthy old install.
 - The install root gains commit-addressed candidate and rollback environments,
   a private rollout lock/journal, an atomic active pointer, and durable receipts.
+- A hard crash no longer ends in an instruction to recover manually. The same
+  repository owns inspection and deterministic reconciliation through the
+  closed `janus.rollout-in-progress.v1` contract.
 - Actual application against the mickey ledger remains RED: human approval,
   quiescence, exact-head verification, and post-deploy observation are still
   required.
