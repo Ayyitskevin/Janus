@@ -137,6 +137,12 @@ closed schema before it can be recorded.
 No inference is introduced in M5. Existing commands and gates retain their
 meaning.
 
+The first implementation stores both records as typed append-only audit events,
+specified in `docs/spec/decision-learning-events-v1.md`. This keeps export v1
+wire-compatible while carrying their exact canonical bytes in its existing
+digest-protected audit collection. Database triggers enforce pre-ruling context,
+same-gate linkage, matching human provenance, and one feedback event per ruling.
+
 ### M6 — shadow prediction
 
 - Add `janus predict <gate> --shadow`.
