@@ -181,10 +181,26 @@ validates its response against a closed schema, and applies eligibility again
 after inference. Stored decay and delivery checks are executable text and are
 never sent to or invoked by the model.
 
+The M6 adapter accepts only an explicit loopback origin, disables proxy and
+redirect handling, refuses Vulcan's hosted providers before sending a prompt,
+and sends no tools or credentials. Model output is a closed
+three-field JSON document. Raw output is hashed but not retained; malformed or
+empty output, service errors, and context drift become an attributed shadow
+abstention. The adapter never retries or changes aliases.
+
 **Poisoned learning history.** A prediction agreeing with a later prediction is
 not evidence about the operator. Only attributed human rulings label operator
 behavior. Synthetic cases can test mechanics but cannot count toward activation
 quality, and autonomous outcomes never feed back as human labels.
+
+**Hindsight leakage and secret accumulation.** A context written after the
+ruling can make a weak policy look prescient, while copied chats and logs turn
+the ledger into a second sensitive-data store. Migration 0004 refuses context
+after any terminal event. The v1 context accepts closed categorical facts and
+short evidence references, not raw evidence, executable checks, artifacts, or
+credentials. Feedback is written atomically with the human ruling and binds the
+latest earlier context digest; existing rulings cannot be backfilled as though
+their facts were captured prospectively.
 
 **Delegation replay and drift.** A once-valid delegation can expire, be revoked,
 or refer to different policy bytes. Every delegated verdict binds the exact
