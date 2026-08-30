@@ -181,6 +181,13 @@ validates its response against a closed schema, and applies eligibility again
 after inference. Stored decay and delivery checks are executable text and are
 never sent to or invoked by the model.
 
+The M6 adapter accepts only an explicit loopback origin, disables proxy and
+redirect handling, refuses Vulcan's hosted providers before sending a prompt,
+and sends no tools or credentials. Model output is a closed
+three-field JSON document. Raw output is hashed but not retained; malformed or
+empty output, service errors, and context drift become an attributed shadow
+abstention. The adapter never retries or changes aliases.
+
 **Poisoned learning history.** A prediction agreeing with a later prediction is
 not evidence about the operator. Only attributed human rulings label operator
 behavior. Synthetic cases can test mechanics but cannot count toward activation

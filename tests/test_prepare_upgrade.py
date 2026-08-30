@@ -123,16 +123,16 @@ def _committed_copy(root: Path) -> tuple[Path, str, str]:
     _run("git", "config", "user.name", "Janus test", cwd=repo)
     _run("git", "config", "user.email", "janus-test@example.invalid", cwd=repo)
     newest_migration = (
-        repo / "src" / "janus" / "migrations" / "0004_decision_learning_events.sql"
+        repo / "src" / "janus" / "migrations" / "0005_shadow_predictions.sql"
     )
     newest_migration_bytes = newest_migration.read_bytes()
     newest_migration.unlink()
     _run("git", "add", ".", cwd=repo)
-    _run("git", "commit", "-qm", "rollback without migration 0004", cwd=repo)
+    _run("git", "commit", "-qm", "rollback without migration 0005", cwd=repo)
     rollback = _run("git", "rev-parse", "HEAD", cwd=repo).stdout.strip()
     newest_migration.write_bytes(newest_migration_bytes)
     _run("git", "add", str(newest_migration.relative_to(repo)), cwd=repo)
-    _run("git", "commit", "-qm", "candidate adds migration 0004", cwd=repo)
+    _run("git", "commit", "-qm", "candidate adds migration 0005", cwd=repo)
     candidate = _run("git", "rev-parse", "HEAD", cwd=repo).stdout.strip()
     return repo, rollback, candidate
 
@@ -239,17 +239,20 @@ def test_end_to_end_bundle_is_private_exact_and_non_deploying(tmp_path):
         "0002_check_revisions",
         "0003_bound_rulings_require_digest",
         "0004_decision_learning_events",
+        "0005_shadow_predictions",
     ]
     assert manifest["rehearsal"]["candidate"]["packaged_migrations"] == [
         "0001_initial",
         "0002_check_revisions",
         "0003_bound_rulings_require_digest",
         "0004_decision_learning_events",
+        "0005_shadow_predictions",
     ]
     assert manifest["rehearsal"]["rollback"]["packaged_migrations"] == [
         "0001_initial",
         "0002_check_revisions",
         "0003_bound_rulings_require_digest",
+        "0004_decision_learning_events",
     ]
     assert "confidential incident" not in (output / "manifest.json").read_text()
     assert _sha256(db) == live_hash

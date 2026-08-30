@@ -154,7 +154,10 @@ def test_installed_cli_preserves_the_evidence_not_authority_boundary(tmp_path: P
     assert not marker.exists(), "reading statistics executed stored command text"
 
     doctor = run("doctor")
-    assert "Janus records pending authority; it does not grant authority." in doctor
+    assert (
+        "Janus records decision authority; it does not grant execution authority."
+        in doctor
+    )
     assert not marker.exists(), "diagnostics executed stored command text"
 
     document = stable_export.verify_export(run("export", gate_id))
