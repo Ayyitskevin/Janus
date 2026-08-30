@@ -17,7 +17,8 @@ janus --seat <seat> raise "<one sentence a tired human can answer>" \
   --kind taste --decay "what worsens while this waits" \
   --consumer "<seat>: what happens on approve, what happens on refuse"
 
-janus board                # the one screen: what is waiting, how long, what worsens
+janus                      # the one screen: what is waiting, how long, what worsens
+janus board --all          # explicit board command; show rows below the first screen
 janus show <id>            # detail, and whether the binding still holds
 janus check <id>           # preview one stored command, confirm, then observe
 janus stats                # the dated scorecard: is anyone actually using this
@@ -26,11 +27,12 @@ janus revise-check <id> --kind delivery --command "..." --reason "..."
 janus decide <id> --approve --reason "..." [--option <id>]
 ```
 
-`board` is the screen to read first. It sorts by *observed* decay rather than by
-any priority field — a decay check that has fired outranks one that has never
-been run, which outranks one measured to still have time. A gate whose decay
-sentence carries no re-runnable check is printed as `unmeasured`, because
-unknown is not the same as fine. `janus list` remains the plain enumeration.
+`janus` opens the board by default; `janus board` remains its explicit form.
+It is the screen to read first. It sorts by *observed* decay rather than by any
+priority field — a decay check that has fired outranks one that has never been
+run, which outranks one measured to still have time. A gate whose decay sentence
+carries no re-runnable check is printed as `unmeasured`, because unknown is not
+the same as fine. `janus list` remains the plain enumeration.
 Measured rows show two different clocks rather than blending them: gate or
 ruling age is on the first line, and the age of the status-driving observation
 is on the second. Janus exposes freshness without inventing a threshold at

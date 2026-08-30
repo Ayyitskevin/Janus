@@ -938,7 +938,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     p.add_argument("--db", type=Path, help="ledger path (default ~/.janus/janus.db)")
     p.add_argument("--seat", help="declared seat, appended to your OS user")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    sub = p.add_subparsers(dest="cmd")
 
     r = sub.add_parser("raise", help="raise a gate")
     r.add_argument("question")
@@ -1025,6 +1025,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     doc = sub.add_parser("doctor", help="ledger health, append-only proof, drift")
     doc.set_defaults(fn=cmd_doctor)
+
+    # The board is Janus's primary operator surface, so the cheapest invocation
+    # reaches the same implementation as the explicit `janus board` command.
+    p.set_defaults(cmd="board", fn=cmd_board, check=False, all=False, yes=False)
     return p
 
 
