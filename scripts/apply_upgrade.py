@@ -10,6 +10,7 @@ and only then changes the active installed environment.
 from __future__ import annotations
 
 import argparse
+import base64
 import fcntl
 import hashlib
 import json
@@ -769,6 +770,37 @@ def _installed_content(
     ).encode()
 
 
+def _installed_recovery_record(path: Path, content: bytes, mode: int) -> dict[str, str]:
+    return {
+        "content_base64": base64.b64encode(content).decode("ascii"),
+        "mode": f"{mode:04o}",
+        "path": str(path),
+        "sha256": hashlib.sha256(content).hexdigest(),
+    }
+
+
+def _restore_installed_record(record: dict, *, expected_path: Path) -> None:
+    if record.get("path") != str(expected_path):
+        raise RolloutError("installed recovery record targets an unexpected path")
+    encoded = record.get("content_base64")
+    if not isinstance(encoded, str):
+        raise RolloutError("installed recovery record lacks encoded content")
+    try:
+        content = base64.b64decode(encoded, validate=True)
+    except ValueError as exc:
+        raise RolloutError("installed recovery record content is not valid base64") from exc
+    if hashlib.sha256(content).hexdigest() != record.get("sha256"):
+        raise RolloutError("installed recovery record content digest does not match")
+    mode_text = record.get("mode")
+    try:
+        mode = int(mode_text, 8)
+    except (TypeError, ValueError) as exc:
+        raise RolloutError("installed recovery record has an invalid mode") from exc
+    if mode_text != f"{mode:04o}" or mode & ~0o777:
+        raise RolloutError("installed recovery record has an invalid mode")
+    _atomic_private_file(expected_path, content, mode=mode)
+
+
 def apply_upgrade(
     *,
     bundle: Path,
@@ -823,6 +855,11 @@ def apply_upgrade(
         maintenance = _maintenance_environment(install_root)
         try:
             previous = _plan_maintenance(active, legacy, rollback)
+            installed_record_before = _installed_recovery_record(
+                install_root / "INSTALLED",
+                initial["installed_bytes"],
+                initial["installed_mode"],
+            )
             journal_document = {
                 "schema": "janus.rollout-in-progress.v1",
                 "candidate_commit": candidate,
@@ -831,6 +868,7 @@ def apply_upgrade(
                 "started_at": _now(),
                 "step": "entering_maintenance",
                 "previous": previous,
+                "installed_record_before": installed_record_before,
             }
             _atomic_json(journal, journal_document)
             _enter_maintenance(active, maintenance, previous)
@@ -971,10 +1009,9 @@ def apply_upgrade(
                 try:
                     _restore_active(active, previous)
                     if installed_changed:
-                        _atomic_private_file(
-                            install_root / "INSTALLED",
-                            initial["installed_bytes"],
-                            mode=initial["installed_mode"],
+                        _restore_installed_record(
+                            installed_record_before,
+                            expected_path=install_root / "INSTALLED",
                         )
                 except BaseException as exc:
                     recovery_error = exc
