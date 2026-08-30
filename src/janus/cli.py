@@ -1079,15 +1079,15 @@ def cmd_doctor(a, conn, *, open_blocker: str | None = None) -> int:
               "checked at all — unknown, which is not the same as fine")
     seat = core.seat_actor(getattr(a, "seat", None))
     print(f"attribution writes will be attributed to {seat}")
-    print("\nJanus records pending authority; it does not grant authority.")
+    print("\nJanus records decision authority; it does not grant execution authority.")
     return 1 if problems else 0
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="janus",
-        description="A local-first ledger of decisions waiting on a human. "
-                    "Janus records pending authority; it does not grant authority.")
+        description="A local-first ledger of accountable decisions. "
+                    "Janus records decision authority; it does not grant execution authority.")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     p.add_argument("--db", type=Path, help="ledger path (default ~/.janus/janus.db)")
     p.add_argument("--seat", help="declared seat, appended to your OS user")
