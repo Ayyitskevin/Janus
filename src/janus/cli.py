@@ -63,10 +63,26 @@ def cmd_raise(a, conn) -> int:
         delivery_check=a.delivery_check, binding=binding, options=options,
         cites=a.cites,
     )
+    if getattr(a, "json", False):
+        # An agent that raised a gate needs the id back as data, not as prose
+        # to regex. Same shape as `show --json`; the advice below still prints,
+        # on stderr, so a pipeline reads one JSON object and a human still sees it.
+        print(json.dumps(core.get_gate(conn, gid), indent=2, default=str))
+        _raise_advice(a, file=sys.stderr)
+        return 0
     print(f"raised {gid}  ({a.kind}, by {actor})")
     if binding:
         print(f"  bound to {binding.kind}:{binding.locator} @ {binding.sha256[:12]}")
     print(f"  consumer: {a.consumer}")
+    _raise_advice(a)
+    return 0
+
+
+def _raise_advice(a, file=None) -> None:
+    # Resolved at call time on purpose: a default bound to sys.stdout at import
+    # would keep printing to the stream that existed then, not the one the caller
+    # (or a test capture) has now.
+    file = file if file is not None else sys.stdout
 
     # Said at the one moment it can still be acted on. The scorecard's worst
     # number is that 7 of 8 gates carry no decay check, which makes the board's
@@ -76,12 +92,11 @@ def cmd_raise(a, conn) -> int:
     if not a.decay_check:
         print("  no decay check — the board will print this gate as 'unmeasured' and "
               "sort it\n              below every measured one. "
-              "--decay-check '<command>' (exit 0 = the cost arrived).")
+              "--decay-check '<command>' (exit 0 = the cost arrived).", file=file)
     if not a.delivery_check:
         print("  no delivery check — if approval requires action, the consumer "
               "outcome will remain unmeasured.\n              --delivery-check "
-              "'<command>' (exit 0 = the approved effect landed).")
-    return 0
+              "'<command>' (exit 0 = the approved effect landed).", file=file)
 
 
 def cmd_list(a, conn) -> int:
@@ -389,6 +404,10 @@ def _close(a, conn, state: str, reason: str) -> int:
                         option_id=getattr(a, "option", None),
                         reason_codes=getattr(a, "reason_code", None),
                         counterfactual=getattr(a, "counterfactual", None))
+    if getattr(a, "json", False):
+        print(json.dumps(g, indent=2, default=str))
+        print("  " + _CLOSING_NOTE[g["state"]], file=sys.stderr)
+        return 0
     print(f"{a.gate_id} is now {g['state']} (by {actor})")
     if g["ruling"] and g["ruling"]["bound_sha256"]:
         print(f"  ruled on bytes @ {g['ruling']['bound_sha256'][:16]}")
@@ -1107,6 +1126,9 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--option", action="append",
                    help="id:label[:detail]; suffix id with * to recommend. Repeatable")
     r.add_argument("--cites", help="prior gate id this re-raises")
+    r.add_argument("--json", action="store_true",
+                   help="print the raised gate as JSON (the shape `show --json` prints); "
+                        "advice goes to stderr so stdout is one object")
     r.set_defaults(fn=cmd_raise)
 
     ls = sub.add_parser("list", help="list gates")
@@ -1192,6 +1214,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     d.add_argument("--option", help="required when the gate offers options")
     d.add_argument("--yes", action="store_true", help="rule even though bytes drifted")
+    d.add_argument("--json", action="store_true",
+                   help="print the closed gate as JSON; the closing note goes to stderr")
     d.set_defaults(fn=cmd_decide)
 
     for name, fn, helptext in (
@@ -1203,6 +1227,8 @@ def build_parser() -> argparse.ArgumentParser:
         s.add_argument("gate_id")
         s.add_argument("--reason", required=True)
         s.add_argument("--yes", action="store_true")
+        s.add_argument("--json", action="store_true",
+                       help="print the closed gate as JSON; the closing note goes to stderr")
         s.set_defaults(fn=fn)
 
     c = sub.add_parser("check", help="run a decay or delivery check (observation only)")
