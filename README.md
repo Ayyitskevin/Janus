@@ -72,6 +72,11 @@ migration, runs no check, and does not inspect live bindings. The exact format
 and cross-language conformance vector are in [the export v1
 specification](docs/spec/export-v1.md). Verifying an export proves content
 identity only; it does not turn a ruling into permission to act.
+
+The diagnostic shape is also available where an agent most needs it: `raise`, `decide`,
+`withdraw`, `expire`, and `supersede` accept `--json` and print the gate as one object on
+stdout (the same shape as `show --json`), with the advice lines on stderr — so the id of a
+gate you just raised comes back as data, not as prose to parse.
 Decision contexts and structured human feedback are typed append-only audit
 events, so the unchanged export v1 envelope carries their exact bytes and
 digests. Context can be recorded only before a ruling; omitted facts remain
