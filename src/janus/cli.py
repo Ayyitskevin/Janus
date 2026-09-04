@@ -63,6 +63,16 @@ def cmd_raise(a, conn) -> int:
         delivery_check=a.delivery_check, binding=binding, options=options,
         cites=a.cites,
     )
+    if getattr(a, "quiet", False):
+        # For id=$(janus raise ... --quiet): one word on stdout, nothing to regex,
+        # advice still seen on stderr. Capture the id into a LOWERCASE name —
+        # under zsh, assigning to GID/UID/EGID/EUID calls setgid(2)/setuid(2)
+        # (zsh's special parameters), which is the "(eval):1: failed to change
+        # group ID: operation not permitted" seats hit on 2026-09-02/04. That
+        # error was never Janus's; this flag removes the reason to parse prose.
+        print(gid)
+        _raise_advice(a, file=sys.stderr)
+        return 0
     if getattr(a, "json", False):
         # An agent that raised a gate needs the id back as data, not as prose
         # to regex. Same shape as `show --json`; the advice below still prints,
@@ -1129,6 +1139,9 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--json", action="store_true",
                    help="print the raised gate as JSON (the shape `show --json` prints); "
                         "advice goes to stderr so stdout is one object")
+    r.add_argument("--quiet", action="store_true",
+                   help="print the new gate's id and nothing else on stdout, for "
+                        "`$(...)` capture; advice goes to stderr")
     r.set_defaults(fn=cmd_raise)
 
     ls = sub.add_parser("list", help="list gates")

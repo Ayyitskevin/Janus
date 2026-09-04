@@ -76,7 +76,11 @@ identity only; it does not turn a ruling into permission to act.
 The diagnostic shape is also available where an agent most needs it: `raise`, `decide`,
 `withdraw`, `expire`, and `supersede` accept `--json` and print the gate as one object on
 stdout (the same shape as `show --json`), with the advice lines on stderr — so the id of a
-gate you just raised comes back as data, not as prose to parse.
+gate you just raised comes back as data, not as prose to parse. For plain command
+substitution, `raise --quiet` prints the bare id and nothing else on stdout. Capture it
+into a lowercase name: under zsh, `GID`/`UID`/`EGID`/`EUID` are special parameters and
+assigning `GID=$(janus raise ...)` calls setgid(2), which fails with "(eval):1: failed to
+change group ID: operation not permitted" — a shell behavior, never a Janus one.
 Decision contexts and structured human feedback are typed append-only audit
 events, so the unchanged export v1 envelope carries their exact bytes and
 digests. Context can be recorded only before a ruling; omitted facts remain

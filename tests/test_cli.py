@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+
 import pytest
 
 from janus import __version__, cli
@@ -66,6 +68,20 @@ def test_decide_and_supersede_json_return_the_closed_gate(tmp_path, capsys):
     out = capsys.readouterr()
     assert json.loads(out.out)["state"] == "superseded"
     assert "NOBODY RULED" in out.err and "NOBODY RULED" not in out.out
+
+
+def test_raise_quiet_prints_the_bare_id_and_nothing_else(tmp_path, capsys):
+    # The wrong answer this fails against: prose on stdout, so `id=$(janus raise ...)`
+    # captures "raised gXXXX (kind, by ...)" and the agent regexes it — or names the
+    # capture variable GID under zsh, where GID is a special parameter and assigning
+    # to it calls setgid(2) ("failed to change group ID: operation not permitted").
+    db = tmp_path / "janus.db"
+    out = _raise(db, capsys, "--quiet")
+    gid = out.out.strip()
+    assert re.fullmatch(r"g[0-9a-f]+", gid), f"stdout was not the bare id: {out.out!r}"
+    assert "no decay check" in out.err, "the advice still prints, on stderr"
+    assert cli.main(["--db", str(db), "show", gid, "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["id"] == gid
 
 
 def test_raise_without_json_still_prints_the_prose_and_advice_on_stdout(tmp_path, capsys):
