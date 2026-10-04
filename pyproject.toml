@@ -31,7 +31,7 @@ test = [
     "build==1.6.1",
     "jsonschema==4.26.0",
     "pytest==9.1.1",
-    "ruff==0.16.8",
+    "ruff==0.16.9",
 ]
 
 [project.scripts]
