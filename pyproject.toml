@@ -30,7 +30,7 @@ Issues = "https://github.com/Ayyitskevin/Janus/issues"
 test = [
     "build==1.6.1",
     "jsonschema==4.26.0",
-    "pytest==9.1.1",
+    "pytest==9.2.0",
     "ruff==0.17.1",
 ]
 
