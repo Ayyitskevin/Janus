@@ -29,6 +29,7 @@ janus show <id>            # detail, and whether the binding still holds
 janus check <id>           # preview one stored command, confirm, then observe
 janus stats                # the dated scorecard: is anyone actually using this
 janus export [<id>]        # stable, digest-verified evidence (never authority)
+janus export --request-id ID  # recover one gate from its saved raise request
 janus verify-export FILE   # verify an export offline; use - to read from stdin
 janus revise-check <id> --kind delivery --command "..." --reason "..."
 janus context <id> --project janus --action-class merge --environment test \
@@ -120,6 +121,20 @@ under the same ID produces a conflict. Inspect the original gate before
 choosing a fresh ID for a new decision. Without a request ID, each raise creates
 a separate gate. IDs are case-sensitive and use 1–128 ASCII letters, digits,
 dots, underscores, colons, slashes, or hyphens, starting with a letter or digit.
+
+If the raise response was lost, a fresh conductor can recover the gate from
+the same ledger with just the request ID saved in its work packet:
+
+```bash
+janus export --request-id gallery/contact-sheet-margin-1 > decision.json
+```
+
+The export contains the decision as recorded at read time, including any later
+ruling. It has the same bytes as exporting that gate by its generated ID at
+the same snapshot. The conductor can recover it even if the original bound
+file has moved. An unknown request ID exits 2 with a diagnostic on stderr and
+empty stdout. Pass a successful export to the reviewer with independently
+trusted gate and digest expectations for `janus verify-export`.
 
 Decision contexts and structured human feedback are typed append-only audit
 events, so the unchanged export v1 envelope carries their exact bytes and

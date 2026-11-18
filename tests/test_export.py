@@ -7,6 +7,7 @@ import json
 import os
 import sqlite3
 import sys
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -172,6 +173,116 @@ def test_missing_point_read_is_distinct_from_an_empty_ledger(populated_ledger):
     db, _, _ = populated_ledger
     with pytest.raises(JanusError, match="no such gate"):
         stable_export.export_gates(db, "g00000000000")
+
+
+def test_request_id_export_recovers_the_ruled_gate_by_its_saved_key(tmp_path, capsysbinary):
+    db = tmp_path / "janus.db"
+    proof = tmp_path / "proof.txt"
+    proof.write_text("reviewed bytes")
+    with closing(core.connect(db)) as conn:
+        # The same string may name one gate and be another gate's request ID.
+        saved_key = _gate(conn)
+        gate_id = _gate(
+            conn, request_id=saved_key, binding=core.resolve_binding("file", str(proof)),
+            options=[{"id": "ship", "label": "Ship", "recommended": True},
+                     {"id": "hold", "label": "Hold for print"}],
+        )
+        core.close_gate(conn, gate_id, state="approved", reason="Wait for the print.",
+                        actor="owner", option_id="hold")
+        before = list(conn.iterdump())
+        proof.rename(tmp_path / "moved-proof.txt")
+
+        expected = stable_export.export_gates(db, gate_id)
+        assert cli.main(["--db", str(db), "export", saved_key]) == 0
+        positional = capsysbinary.readouterr()
+        assert stable_export.verify_export(positional.out)["selection"] == {"gate_id": saved_key}
+        assert positional.out != expected + b"\n" and not positional.err
+        assert stable_export.export_gates(db, request_id=saved_key) == expected
+        assert cli.main(["--db", str(db), "export", "--request-id", saved_key]) == 0
+        output = capsysbinary.readouterr()
+        assert output.out == expected + b"\n" and not output.err
+        receipt = stable_export.verify_export_receipt(output.out, expect_gate=gate_id)
+        assert receipt["record_count"] == 1
+        assert receipt["decision"]["state"] == "approved"
+        assert receipt["decision"]["selected_option"] == {"id": "hold", "label": "Hold for print"}
+        assert receipt["decision"]["binding_evidence"] == "recorded"
+        assert list(conn.iterdump()) == before
+
+
+def test_request_id_export_refuses_missing_invalid_and_conflicting_keys(tmp_path, capsysbinary):
+    db = tmp_path / "janus.db"
+    with closing(core.connect(db)) as conn:
+        gate_id = _gate(conn, request_id="Saved/Proof-1")
+        before = list(conn.iterdump())
+        for key in ("saved/proof-1", "unknown", "", "a" * 129, "bad\x1bkey"):
+            with pytest.raises(JanusError):
+                stable_export.export_gates(db, request_id=key)
+            assert cli.main(["--db", str(db), "export", "--request-id", key]) == 2
+            output = capsysbinary.readouterr()
+            assert output.err and not output.out and b"\x1b" not in output.err
+
+        for positional in (gate_id, ""):
+            with pytest.raises(JanusError):
+                stable_export.export_gates(db, positional, request_id="Saved/Proof-1")
+        for selectors in ([""], [gate_id, "--request-id", "Saved/Proof-1"],
+                          ["", "--request-id", "Saved/Proof-1"],
+                          ["--request-id", "Saved/Proof-1", ""],
+                          ["--request-id", "unknown", "--request-id", "Saved/Proof-1"]):
+            try:
+                rc = cli.main(["--db", str(db), "export", *selectors])
+            except SystemExit as exc:
+                rc = exc.code
+            output = capsysbinary.readouterr()
+            assert rc == 2 and output.err and not output.out
+        assert list(conn.iterdump()) == before
+
+
+def test_request_id_export_cannot_expand_a_damaged_mapping_to_the_whole_ledger(tmp_path):
+    db = tmp_path / "janus.db"
+    with closing(core.connect(db)) as conn:
+        _gate(conn)
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("INSERT INTO raise_requests (request_id, gate_id) VALUES ('broken', '')")
+        conn.commit()
+    with pytest.raises(JanusError):
+        stable_export.export_gates(db, request_id="broken")
+
+
+def test_request_id_export_escapes_storage_diagnostics(tmp_path, capsysbinary):
+    missing = tmp_path / "missing\n\x1b[2J.db"
+    assert cli.main(["--db", str(missing), "export", "--request-id", "saved"]) == 2
+    reply = capsysbinary.readouterr()
+    lines = reply.err.decode().splitlines()
+    assert not reply.out and len(lines) == 1 and lines[0].isprintable()
+    assert "no Janus ledger" in lines[0] and not missing.exists()
+
+
+def test_request_id_export_resolves_and_reads_in_one_snapshot(tmp_path, monkeypatch):
+    db = tmp_path / "janus.db"
+    with closing(core.connect(db)) as writer:
+        gate_id = _gate(writer, request_id="snapshot")
+        open_export = stable_export.export_gates(db, gate_id)
+        connect = sqlite3.connect
+        connections = []
+        rulings = []
+
+        def rule_during_lookup(sql):
+            if sql.lstrip().upper().startswith("SELECT") and "raise_requests" in sql.lower():
+                rulings.append(core.close_gate(writer, gate_id, state="refused",
+                                               actor="owner", reason="Decision changed."))
+
+        def observed_connect(database, *args, **kwargs):
+            connections.append(database)
+            reader = connect(database, *args, **kwargs)
+            reader.set_trace_callback(rule_during_lookup)
+            return reader
+
+        with monkeypatch.context() as patch:
+            patch.setattr(sqlite3, "connect", observed_connect)
+            assert stable_export.export_gates(db, request_id="snapshot") == open_export
+        assert connections == [db.as_uri() + "?mode=ro"]
+        assert [result["state"] for result in rulings] == ["refused"]
+        assert stable_export.export_gates(db, request_id="snapshot") != open_export
 
 
 def test_document_tampering_fails_before_it_can_be_consumed(populated_ledger):
@@ -357,10 +468,11 @@ def test_export_opens_the_ledger_read_only(monkeypatch, populated_ledger):
     assert calls[0][1].get("uri") is True
 
 
-def test_export_neither_creates_the_main_database_nor_migrates_a_ledger(tmp_path: Path):
+@pytest.mark.parametrize("selectors", [{}, {"request_id": "missing"}], ids=["all", "request-id"])
+def test_export_neither_creates_the_main_database_nor_migrates_a_ledger(tmp_path: Path, selectors):
     missing = tmp_path / "missing.db"
     with pytest.raises(JanusError, match="no Janus ledger"):
-        stable_export.export_gates(missing)
+        stable_export.export_gates(missing, **selectors)
     assert not missing.exists()
 
     stale = tmp_path / "stale.db"
@@ -369,7 +481,7 @@ def test_export_neither_creates_the_main_database_nor_migrates_a_ledger(tmp_path
     conn.commit()
     conn.close()
     with pytest.raises(JanusError, match="migrations do not exactly match"):
-        stable_export.export_gates(stale)
+        stable_export.export_gates(stale, **selectors)
     with sqlite3.connect(stale) as check:
         assert check.execute(
             "SELECT COUNT(*) FROM schema_migrations WHERE version = '0002_check_revisions'"

@@ -2,6 +2,9 @@
 
 `janus export` is the stable, read-only interchange surface for gate evidence.
 The full ledger and one-gate forms use the same envelope and record shape.
+The CLI can select one gate by its gate ID or by its saved raise request ID
+on that ledger. Both forms emit the resolved gate ID in `selection.gate_id`
+and produce identical bytes from the same snapshot.
 
 ## Safety boundary
 

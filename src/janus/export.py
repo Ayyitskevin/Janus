@@ -314,9 +314,27 @@ def read_snapshot(
         raise primary_error
 
 
-def export_gates(db_path: Path | None = None, gate_id: str | None = None) -> bytes:
+def export_gates(
+    db_path: Path | None = None, gate_id: str | None = None, *, request_id: str | None = None
+) -> bytes:
     """Export gates without changing logical content or creating the main DB."""
+    if request_id is not None:
+        if gate_id is not None:
+            raise JanusError("choose either a gate ID or a request ID for export")
+        core.validate_request_id(request_id)
+    if gate_id == "":
+        raise JanusError("gate ID must not be empty")
+
     with read_snapshot(db_path, operation="export") as (conn, migrations):
+        if request_id is not None:
+            row = conn.execute(
+                "SELECT gate_id FROM raise_requests WHERE request_id = ?", (request_id,)
+            ).fetchone()
+            if row is None:
+                raise JanusError(f"no gate for request ID {request_id!r}")
+            gate_id = row["gate_id"]
+            if not isinstance(gate_id, str) or not _GATE_ID_RE.fullmatch(gate_id):
+                raise JanusError(f"request ID {request_id!r} maps to an invalid gate ID")
         where = " WHERE id = ?" if gate_id else ""
         params = (gate_id,) if gate_id else ()
         gates = [
