@@ -795,7 +795,11 @@ def verify_export(raw: bytes | str) -> dict[str, Any]:
 
 
 def verify_export_receipt(
-    raw: bytes | str, *, expect_gate: str | None = None, expect_document_sha256: str | None = None
+    raw: bytes | str,
+    *,
+    expect_gate: str | None = None,
+    expect_document_sha256: str | None = None,
+    expect_bound_file_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Summarize verified evidence after comparing any independent expectations."""
     envelope = _verified_envelope(raw)
@@ -818,9 +822,25 @@ def verify_export_receipt(
             )
 
     records = document["records"]
+    record = records[0]["record"] if gate_id is not None else None
+    if expect_bound_file_sha256 is not None:
+        _sha256_string(expect_bound_file_sha256, "--expect-bound-file-sha256")
+        if record is None:
+            raise JanusError("cannot verify export: a bound file comparison requires one gate")
+        binding = record["binding"]
+        event = record["terminal_event"]
+        if (
+            binding is None
+            or binding["kind"] != "file"
+            or event is None
+            or event["binding_evidence"]["status"] != "recorded"
+        ):
+            raise JanusError("cannot verify export: no recorded ruling-time file digest")
+        if event["binding_evidence"]["sha256"] != expect_bound_file_sha256:
+            raise JanusError("cannot verify export: ruling-time file digest does not match")
+
     decision = None
-    if gate_id is not None:
-        record = records[0]["record"]
+    if record is not None:
         event = record["terminal_event"]
         selected_option = None
         if event is not None and event["option_id"] is not None:
@@ -835,9 +855,12 @@ def verify_export_receipt(
             "selected_option": selected_option,
             "binding_evidence": event["binding_evidence"]["status"] if event is not None else None,
         }
-    return {
+    receipt = {
         "gate_id": gate_id,
         "record_count": len(records),
         "document_sha256": digest,
         "decision": decision,
     }
+    if expect_bound_file_sha256 is not None:
+        receipt["matched_bound_file_sha256"] = expect_bound_file_sha256
+    return receipt
