@@ -12,6 +12,8 @@ import json
 import re
 import sqlite3
 from collections import defaultdict
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -49,13 +51,13 @@ def _connect_read_only(path: Path) -> sqlite3.Connection:
     try:
         path.lstat()
     except FileNotFoundError:
-        raise JanusError(f"cannot export: no Janus ledger at {path}")
+        raise JanusError(f"no Janus ledger at {path}")
     except OSError as exc:
         detail = exc.strerror or type(exc).__name__
-        raise JanusError(f"cannot export: cannot inspect ledger {path}: {detail}") from exc
+        raise JanusError(f"cannot inspect ledger {path}: {detail}") from exc
     blocker = core.storage_open_blocker(path)
     if blocker:
-        raise JanusError(f"cannot export: refusing unsafe ledger path: {blocker}")
+        raise JanusError(f"refusing unsafe ledger path: {blocker}")
     try:
         conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
@@ -63,7 +65,7 @@ def _connect_read_only(path: Path) -> sqlite3.Connection:
         conn.execute("PRAGMA query_only = ON")
         return conn
     except sqlite3.Error as exc:
-        raise JanusError(f"cannot export {path} read-only: {exc}") from exc
+        raise JanusError(f"cannot open {path} read-only: {exc}") from exc
 
 
 def _expected_migrations() -> list[dict[str, str]]:
@@ -84,12 +86,12 @@ def _validated_migrations(conn: sqlite3.Connection) -> list[dict[str, str]]:
         ]
     except sqlite3.Error as exc:
         raise JanusError(
-            "cannot export: this ledger has no readable Janus migration history"
+            "this ledger has no readable Janus migration history"
         ) from exc
     if actual != expected:
         raise JanusError(
-            "cannot export: ledger migrations do not exactly match this Janus build; "
-            "run a matching ordinary Janus command to migrate, or use the matching exporter"
+            "ledger migrations do not exactly match this Janus build; "
+            "run a matching ordinary Janus command to migrate, or use the matching Janus build"
         )
     return actual
 
@@ -247,17 +249,74 @@ def _record(
     return record
 
 
-def export_gates(db_path: Path | None = None, gate_id: str | None = None) -> bytes:
-    """Export gates without changing logical content or creating the main DB."""
+@contextmanager
+def read_snapshot(
+    db_path: Path | None, *, operation: str
+) -> Iterator[tuple[sqlite3.Connection, list[dict[str, str]]]]:
+    """Read a current ledger in one transaction. Publish results only after exit."""
     # Capture the absolute lexical identity once. A caller can change the
     # process CWD while the snapshot is open; both boundary checks must still
     # name the same ledger family.
     path = core.storage_path(db_path)
-    conn = _connect_read_only(path)
+    try:
+        conn = _connect_read_only(path)
+    except JanusError as exc:
+        raise JanusError(f"cannot {operation}: {exc}") from exc
     primary_error: BaseException | None = None
     try:
         conn.execute("BEGIN")
-        migrations = _validated_migrations(conn)
+        try:
+            migrations = _validated_migrations(conn)
+        except JanusError as exc:
+            raise JanusError(f"cannot {operation}: {exc}") from exc
+        yield conn, migrations
+    except sqlite3.Error as exc:
+        primary_error = JanusError(f"cannot {operation} this ledger: {exc}")
+        primary_error.__cause__ = exc
+    except BaseException as exc:
+        primary_error = exc
+
+    try:
+        conn.close()
+    except sqlite3.Error as exc:
+        if primary_error is None:
+            primary_error = JanusError(
+                f"cannot {operation}: could not close the read-only SQLite snapshot: {exc}"
+            )
+            primary_error.__cause__ = exc
+        else:
+            primary_error.add_note(
+                f"SQLite snapshot cleanup also failed while closing the connection: {exc}"
+            )
+
+    # WAL readers may create -wal/-shm coordination files even in mode=ro.
+    # Re-check after close so the documented physical side effect cannot weaken
+    # the same exact storage boundary that admitted the snapshot.
+    try:
+        blocker = core.storage_open_blocker(path)
+    except JanusError as exc:
+        if primary_error is None:
+            primary_error = exc
+        else:
+            primary_error.add_note(
+                f"Post-{operation} storage inspection also failed: {exc}"
+            )
+        blocker = None
+    if blocker:
+        boundary_error = JanusError(
+            f"cannot {operation}: SQLite coordination storage became unsafe: {blocker}"
+        )
+        if primary_error is None:
+            primary_error = boundary_error
+        else:
+            primary_error.add_note(str(boundary_error))
+    if primary_error is not None:
+        raise primary_error
+
+
+def export_gates(db_path: Path | None = None, gate_id: str | None = None) -> bytes:
+    """Export gates without changing logical content or creating the main DB."""
+    with read_snapshot(db_path, operation="export") as (conn, migrations):
         where = " WHERE id = ?" if gate_id else ""
         params = (gate_id,) if gate_id else ()
         gates = [
@@ -326,50 +385,7 @@ def export_gates(db_path: Path | None = None, gate_id: str | None = None) -> byt
                 "document_sha256": _sha256(document),
             },
         }
-        result = canonical_json(envelope)
-    except sqlite3.Error as exc:
-        primary_error = JanusError(f"cannot export this ledger: {exc}")
-        primary_error.__cause__ = exc
-    except BaseException as exc:
-        primary_error = exc
-
-    try:
-        conn.close()
-    except sqlite3.Error as exc:
-        if primary_error is None:
-            primary_error = JanusError(
-                f"cannot export: could not close the read-only SQLite snapshot: {exc}"
-            )
-            primary_error.__cause__ = exc
-        else:
-            primary_error.add_note(
-                f"SQLite snapshot cleanup also failed while closing the connection: {exc}"
-            )
-
-    # WAL readers may create -wal/-shm coordination files even in mode=ro.
-    # Re-check after close so the documented physical side effect cannot weaken
-    # the same exact storage boundary that admitted the snapshot.
-    try:
-        blocker = core.storage_open_blocker(path)
-    except JanusError as exc:
-        if primary_error is None:
-            primary_error = exc
-        else:
-            primary_error.add_note(
-                f"Post-export storage inspection also failed: {exc}"
-            )
-        blocker = None
-    if blocker:
-        boundary_error = JanusError(
-            f"cannot export: SQLite coordination storage became unsafe: {blocker}"
-        )
-        if primary_error is None:
-            primary_error = boundary_error
-        else:
-            primary_error.add_note(str(boundary_error))
-    if primary_error is not None:
-        raise primary_error
-    return result
+        return canonical_json(envelope)
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
