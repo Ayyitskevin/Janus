@@ -687,8 +687,7 @@ def cmd_board(a, conn) -> int:
                          "observation": observation})
     promised.sort(key=lambda r: (r["status"] != "not landed", -r["secs"]))
 
-    unwatched_hint = (f"  janus list --unmeasured-delivery · {unwatched} approved gate(s)"
-                      " carry no delivery check")
+    unwatched_hint = f"  Unmeasured approvals: {unwatched} · janus list --unmeasured-delivery"
     if not rows and not promised:
         print("Nothing is waiting on a human." if not unwatched else
               "No decision is waiting on a human.")

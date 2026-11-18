@@ -1372,7 +1372,7 @@ def test_the_board_shares_one_screen_between_decisions_and_promises(tmp_path):
     assert "PROMISED, NOT DELIVERED" in folded
     assert any(gate in folded for gate in promised), folded
     assert folded.count("below the fold") == 2, folded
-    assert "1 approved gate(s) carry no delivery check" in folded
+    assert "Unmeasured approvals: 1" in folded
 
 
 def test_board_check_records_observations_without_changing_state(tmp_path):
@@ -1643,7 +1643,7 @@ def test_any_approved_gate_with_no_delivery_check_is_counted_not_listed(tmp_path
     core.close_gate(conn, g, state="approved", reason="yes", actor="kevin")
 
     out = _board(db)
-    assert "1 approved gate(s) carry no delivery check" in out
+    assert "Unmeasured approvals: 1" in out
     assert g not in out, "it must be counted, not listed as a clearable row"
 
 
@@ -2392,14 +2392,14 @@ def test_a_gate_that_gains_a_delivery_check_stops_being_counted_as_unwatchable(t
     core.close_gate(conn, g, state="approved", reason="yes", actor="kevin")
 
     before = _board(db)
-    assert "1 approved gate(s) carry no delivery check" in before
+    assert "Unmeasured approvals: 1" in before
     assert g not in before
 
     core.revise_check(conn, g, "delivery", "false", "tester",
                       "it shipped with no way to tell whether it landed")
 
     after = _board(db)
-    assert "carry no delivery check" not in after, after
+    assert "Unmeasured approvals:" not in after, after
     assert g in after and "PROMISED, NOT DELIVERED" in after
 
 

@@ -107,6 +107,19 @@ def test_board_hint_fits_both_render_paths_and_disappears_at_zero(tmp_path, caps
     assert "delivery" in empty and ("no " in empty or "0 " in empty)
 
 
+def test_board_fits_a_three_digit_unmeasured_count_at_minimum_width(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("COLUMNS", "80")
+    db = tmp_path / "janus.db"
+    with closing(core.connect(db)) as conn:
+        for i in range(100):
+            _gate(conn, f"Assign reviewer {i}?")
+
+    for flags in ([], ["--all"]):
+        lines = _read(db, capsys, "board", *flags).splitlines()
+        assert any("100" in line and COMMAND in line for line in lines)
+        assert max(map(len, lines)) <= 80
+
+
 @pytest.mark.parametrize("state", ["open", "approved"])
 @pytest.mark.parametrize("filter_first", [True, False])
 def test_explicit_state_and_unmeasured_delivery_are_mutually_exclusive(
