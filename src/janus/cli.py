@@ -326,9 +326,18 @@ def _publish_export(directory: int, name: str, artifact: bytes, ledger: Path) ->
         raise
 
 
+def _publication_receipt(artifact: bytes) -> bytes:
+    envelope = json.loads(artifact)
+    pins = {
+        "gate_id": envelope["document"]["selection"]["gate_id"],
+        "document_sha256": envelope["integrity"]["document_sha256"],
+    }
+    return json.dumps(pins, separators=(",", ":")).encode("ascii") + b"\n"
+
+
 def _export_to_file(
-    output: str, db_path: Path | None, gate: str | None, request: str | None
-) -> None:
+    output: str, db_path: Path | None, gate: str | None, request: str | None, *, receipt_json: bool
+) -> bytes | None:
     parent, name = os.path.split(output)
     if name in ("", ".", ".."):
         raise JanusError("cannot export: --output requires a file name")
@@ -344,7 +353,9 @@ def _export_to_file(
             raise JanusError("cannot export: output directory changed during validation")
         _check_export_target(directory, name, ledger)
         artifact = stable_export.export_gates(ledger, gate, request_id=request)
+        receipt = _publication_receipt(artifact) if receipt_json else None
         _publish_export(directory, name, artifact, ledger)
+        return receipt
     finally:
         # The rename is the commit point. Closing a read-only directory cannot
         # undo it or turn a committed delivery into a failed publication.
@@ -361,9 +372,23 @@ def cmd_export(a, _conn=None) -> int:
     outputs = a.outputs or []
     if len(outputs) > 1:
         raise JanusError("supply --output only once")
+    file_output = bool(outputs) and outputs[0] != "-"
+    if a.receipt_json and (not file_output or (a.gate_id is None and request_id is None)):
+        raise JanusError("--receipt-json requires one gate or request ID and --output FILE")
     try:
-        if outputs and outputs[0] != "-":
-            _export_to_file(outputs[0], a.db, a.gate_id, request_id)
+        if file_output:
+            receipt = _export_to_file(outputs[0], a.db, a.gate_id, request_id,
+                                      receipt_json=a.receipt_json)
+            if receipt is not None:
+                try:
+                    # Write once without Python buffering so a full or closed pipe
+                    # cannot turn a lost receipt into success at interpreter shutdown.
+                    if sys.stdout is None:
+                        raise OSError("standard output is unavailable")
+                    if os.write(sys.stdout.fileno(), receipt) != len(receipt):
+                        raise OSError("incomplete write to standard output")
+                except (OSError, ValueError) as exc:
+                    raise JanusError(f"file published, but receipt delivery failed: {exc}") from exc
             return 0
         artifact = stable_export.export_gates(a.db, a.gate_id, request_id=request_id)
     except (JanusError, OSError) as exc:
@@ -1355,6 +1380,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="one gate by its saved raise request ID on this ledger")
     ex.add_argument("--output", metavar="FILE", dest="outputs", action="append",
                     help="atomically publish to FILE on success (default or -: stdout)")
+    ex.add_argument("--receipt-json", action="store_true",
+                    help="after publishing one decision to FILE, print its gate ID and "
+                         "canonical document SHA-256 as JSON")
     ex.epilog = "Omit both selectors to export the complete ledger."
     ex.set_defaults(fn=cmd_export)
 
