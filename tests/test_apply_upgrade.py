@@ -107,7 +107,7 @@ def _committed_copy(root: Path) -> tuple[Path, str, str]:
     _run("git", "init", "-q", cwd=repo)
     _run("git", "config", "user.name", "Janus rollout test", cwd=repo)
     _run("git", "config", "user.email", "janus-rollout@example.invalid", cwd=repo)
-    newest = repo / "src/janus/migrations/0005_shadow_predictions.sql"
+    newest = repo / "src/janus/migrations/0006_raise_request_id.sql"
     newest_bytes = newest.read_bytes()
     newest.unlink()
     _run("git", "add", ".", cwd=repo)
@@ -118,6 +118,28 @@ def _committed_copy(root: Path) -> tuple[Path, str, str]:
     _run("git", "commit", "-qm", "candidate fixture", cwd=repo)
     candidate = _run("git", "rev-parse", "HEAD", cwd=repo).stdout.strip()
     return repo, rollback, candidate
+
+
+def test_freshness_preserves_unkeyed_gate_digests_and_rejects_a_changed_request_id(tmp_path):
+    db = _legacy_ledger(tmp_path)
+    legacy, _ = apply_upgrade._snapshot_facts(db)
+    connection = core.connect(db)
+    try:
+        migrated, _ = apply_upgrade._snapshot_facts(db)
+        assert migrated["content_sha256"] == legacy["content_sha256"]
+        core.raise_gate(
+            connection, question="Which map edition?", kind="taste", consumer="print team",
+            decay="the printing window closes", actor="tester", request_id="map.edition",
+        )
+        prepared, _ = apply_upgrade._snapshot_facts(db)
+        # Simulate a rewrite with the same row counts and migration history.
+        connection.execute("DROP TRIGGER gates_no_update")
+        connection.execute("UPDATE gates SET request_id = 'map.other' WHERE request_id IS NOT NULL")
+        connection.commit()
+        with pytest.raises(apply_upgrade.RolloutError, match="changed.*content_sha256"):
+            apply_upgrade._require_fresh_snapshot({"backup": prepared}, db)
+    finally:
+        connection.close()
 
 
 @pytest.fixture(scope="session")
@@ -1422,7 +1444,7 @@ def test_recovery_after_migration_restores_code_but_never_the_database(
                 "SELECT version FROM schema_migrations ORDER BY version"
             )
         ]
-    assert migrations_before_recovery[-1] == "0005_shadow_predictions"
+    assert migrations_before_recovery[-1] == "0006_raise_request_id"
 
     plan = apply_upgrade.inspect_recovery(
         install_root=case["install_root"],
@@ -1570,6 +1592,7 @@ def test_end_to_end_rollout_activates_exact_candidate_and_retains_rollback(
         "0003_bound_rulings_require_digest",
         "0004_decision_learning_events",
         "0005_shadow_predictions",
+        "0006_raise_request_id",
     ]
     assert Path(receipt["rollback"]["code_environment"]).is_dir()
     assert Path(receipt["rollback"]["database_backup"]).is_file()

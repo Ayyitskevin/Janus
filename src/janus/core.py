@@ -27,6 +27,7 @@ TERMINAL_STATES = ("approved", "refused", "expired", "withdrawn", "superseded")
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 DEFAULT_DB = Path(os.environ.get("JANUS_DB", Path.home() / ".janus" / "janus.db"))
 _SEAT_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")
+_REQUEST_ID_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}")
 _CONTEXT_TOKEN_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _REASON_CODE_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 DECISION_CONTEXT_SCHEMA = "janus.decision-context.v1"
@@ -908,6 +909,22 @@ def new_id() -> str:
     return "g" + uuid.uuid4().hex[:11]
 
 
+def _replayed_gate(conn: sqlite3.Connection, request_id: str,
+                   fields: dict, options: list[tuple]) -> str:
+    # Compare the immutable inputs stored by the original raise. Later rulings
+    # and revisions, and the identity of this caller, do not define a request.
+    columns = ", ".join(fields)
+    row = conn.execute(f"SELECT id, {columns} FROM gates WHERE request_id = ?",
+                       (request_id,)).fetchone()
+    gid = row[0]
+    original_options = [tuple(option) for option in conn.execute(
+        "SELECT position, option_id, label, detail, recommended FROM gate_options"
+        " WHERE gate_id = ? ORDER BY position", (gid,))]
+    if tuple(row[1:]) != tuple(fields.values()) or original_options != options:
+        raise JanusError(f"request ID {request_id!r} conflicts with the original raise for {gid}")
+    return gid
+
+
 def raise_gate(
     conn: sqlite3.Connection,
     *,
@@ -922,7 +939,13 @@ def raise_gate(
     binding: Binding | None = None,
     options: list[dict] | None = None,
     cites: str | None = None,
+    request_id: str | None = None,
 ) -> str:
+    if request_id is not None and (
+        not isinstance(request_id, str) or not _REQUEST_ID_RE.fullmatch(request_id)
+    ):
+        raise JanusError("request ID must be 1-128 ASCII letters, digits or ._:/-"
+                         " and start with a letter or digit")
     if kind not in KINDS:
         raise JanusError(
             f"kind must be one of {', '.join(KINDS)} — it answers WHY a human is "
@@ -935,28 +958,52 @@ def raise_gate(
             "question is longer than 280 characters — a gate a tired human "
             "cannot answer in one sentence has not been thought through yet"
         )
-    gid = new_id()
-    conn.execute(
-        "INSERT INTO gates (id, raised_at, raised_by, question, kind, decay,"
-        " decay_check, consumer, horizon, delivery_check, binding_kind,"
-        " binding_locator, binding_sha256, cites)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (gid, now(), actor, question, kind, decay, decay_check, consumer, horizon,
-         delivery_check,
-         binding.kind if binding else None,
-         binding.locator if binding else None,
-         binding.sha256 if binding else None,
-         cites),
+    fields = dict(
+        question=question, kind=kind, decay=decay, decay_check=decay_check,
+        consumer=consumer, horizon=horizon, delivery_check=delivery_check,
+        binding_kind=binding.kind if binding else None,
+        binding_locator=binding.locator if binding else None,
+        binding_sha256=binding.sha256 if binding else None, cites=cites,
     )
-    for pos, opt in enumerate(options or []):
-        conn.execute(
-            "INSERT INTO gate_options (gate_id, option_id, position, label, detail,"
-            " recommended) VALUES (?,?,?,?,?,?)",
-            (gid, opt["id"], pos, opt["label"], opt.get("detail"),
-             1 if opt.get("recommended") else 0),
-        )
-    audit(conn, actor, "raise", gid, question[:120])
-    conn.commit()
+    option_rows = [
+        (pos, opt["id"], opt["label"], opt.get("detail"), int(bool(opt.get("recommended"))))
+        for pos, opt in enumerate(options or ())
+    ]
+    gid = new_id()
+    record = dict(id=gid, raised_at=now(), raised_by=actor, **fields)
+    on_conflict = ""
+    if request_id is not None:
+        record["request_id"] = request_id
+        on_conflict = " ON CONFLICT(request_id) WHERE request_id IS NOT NULL DO NOTHING"
+    columns = ", ".join(record)
+    placeholders = ", ".join("?" for _ in record)
+    # Insert first so competing writers serialize on the unique key. A
+    # savepoint keeps a failed option or audit insert from consuming the key,
+    # including when the caller already has a transaction on this connection.
+    conn.execute("SAVEPOINT janus_raise_gate")
+    try:
+        inserted = conn.execute(
+            f"INSERT INTO gates ({columns}) VALUES ({placeholders}){on_conflict}",
+            tuple(record.values()),
+        ).rowcount
+        if inserted:
+            conn.executemany(
+                "INSERT INTO gate_options (gate_id, position, option_id, label, detail,"
+                " recommended) VALUES (?,?,?,?,?,?)",
+                ((gid, *option) for option in option_rows),
+            )
+            audit(conn, actor, "raise", gid, question[:120])
+            conn.execute("COMMIT")
+        else:
+            gid = _replayed_gate(conn, request_id, fields, option_rows)
+            conn.execute("RELEASE janus_raise_gate")
+    except BaseException as exc:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK TO janus_raise_gate")
+            conn.execute("RELEASE janus_raise_gate")
+        if request_id is not None and isinstance(exc, sqlite3.Error):
+            raise JanusError(f"cannot raise gate: {exc}") from exc
+        raise
     return gid
 
 
@@ -1061,6 +1108,7 @@ def get_gate(conn: sqlite3.Connection, gate_id: str) -> dict | None:
     if row is None:
         return None
     gate = dict(row)
+    gate.pop("request_id", None)  # Writer retry key; keep the public gate projection stable.
     r = conn.execute("SELECT * FROM rulings WHERE gate_id = ?", (gate_id,)).fetchone()
     gate["ruling"] = dict(r) if r else None
     gate["state"] = r["state"] if r else "open"

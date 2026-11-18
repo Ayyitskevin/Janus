@@ -69,6 +69,9 @@ cleanup failure is reported rather than hidden.
 - SQLite reported `integrity_check=ok` for the backup and rehearsal copy.
 - Candidate migration preserved all earlier migration version/checksum pairs
   plus the row counts and canonical content digest of every ledger table.
+  Migration 0006 adds an optional raise request ID. The gates digest omits
+  that column while every value is null, preserving the digest of legacy
+  gates. Once a request ID exists, the digest includes the column for every row.
 - The rollback wheel opened the migrated copy and observed the same counts and
   content digests. Its separately reported packaged-migration list makes
   candidate-wheel reuse visible even when both packages share a version string.

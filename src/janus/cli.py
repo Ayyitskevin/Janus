@@ -61,49 +61,44 @@ def cmd_raise(a, conn) -> int:
         conn, question=a.question, kind=a.kind, decay=a.decay, consumer=a.consumer,
         actor=actor, decay_check=a.decay_check, horizon=a.horizon,
         delivery_check=a.delivery_check, binding=binding, options=options,
-        cites=a.cites,
+        cites=a.cites, request_id=a.request_id,
     )
-    if getattr(a, "quiet", False):
-        # For id=$(janus raise ... --quiet): one word on stdout, nothing to regex,
-        # advice still seen on stderr. Capture the id into a LOWERCASE name —
-        # under zsh, assigning to GID/UID/EGID/EUID calls setgid(2)/setuid(2)
-        # (zsh's special parameters), which is the "(eval):1: failed to change
-        # group ID: operation not permitted" seats hit on 2026-09-02/04. That
-        # error was never Janus's; this flag removes the reason to parse prose.
+    # A retry can arrive from a different seat after the gate has closed.
+    # Use the ledger for attribution, current state, and effective checks.
+    recorded = core.get_gate(conn, gid) if a.request_id is not None else None
+    if a.quiet:
         print(gid)
-        _raise_advice(a, file=sys.stderr)
-        return 0
-    if getattr(a, "json", False):
-        # An agent that raised a gate needs the id back as data, not as prose
-        # to regex. Same shape as `show --json`; the advice below still prints,
-        # on stderr, so a pipeline reads one JSON object and a human still sees it.
-        print(json.dumps(core.get_gate(conn, gid), indent=2, default=str))
-        _raise_advice(a, file=sys.stderr)
-        return 0
-    print(f"raised {gid}  ({a.kind}, by {actor})")
-    if binding:
-        print(f"  bound to {binding.kind}:{binding.locator} @ {binding.sha256[:12]}")
-    print(f"  consumer: {a.consumer}")
-    _raise_advice(a)
+    elif a.json:
+        print(json.dumps(recorded or core.get_gate(conn, gid), indent=2, default=str))
+    else:
+        if recorded:
+            print(f"{gid}  [{recorded['state']}]  raised by {recorded['raised_by']}")
+        else:
+            print(f"raised {gid}  ({a.kind}, by {actor})")
+        if binding:
+            print(f"  bound to {binding.kind}:{binding.locator} @ {binding.sha256[:12]}")
+        print(f"  consumer: {a.consumer}")
+
+    if recorded is None or recorded["state"] == "open":
+        _raise_advice(
+            recorded["effective_decay_check"] if recorded else a.decay_check,
+            recorded["effective_delivery_check"] if recorded else a.delivery_check,
+            file=sys.stderr if a.quiet or a.json else sys.stdout,
+        )
     return 0
 
 
-def _raise_advice(a, file=None) -> None:
-    # Resolved at call time on purpose: a default bound to sys.stdout at import
-    # would keep printing to the stream that existed then, not the one the caller
-    # (or a test capture) has now.
-    file = file if file is not None else sys.stdout
-
+def _raise_advice(decay_check, delivery_check, *, file) -> None:
     # Said at the one moment it can still be acted on. The scorecard's worst
     # number is that 7 of 8 gates carry no decay check, which makes the board's
     # entire sort run on one data point — and every one of those gates was
     # raised by an agent that had just read a skill telling it to add one.
     # Documentation was not where that habit was being lost.
-    if not a.decay_check:
+    if not decay_check:
         print("  no decay check — the board will print this gate as 'unmeasured' and "
               "sort it\n              below every measured one. "
               "--decay-check '<command>' (exit 0 = the cost arrived).", file=file)
-    if not a.delivery_check:
+    if not delivery_check:
         print("  no delivery check — if approval requires action, the consumer "
               "outcome will remain unmeasured.\n              --delivery-check "
               "'<command>' (exit 0 = the approved effect landed).", file=file)
@@ -1153,11 +1148,13 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--option", action="append",
                    help="id:label[:detail]; suffix id with * to recommend. Repeatable")
     r.add_argument("--cites", help="prior gate id this re-raises")
+    r.add_argument("--request-id", metavar="ID",
+                   help="reuse the original gate when retrying this decision on this ledger")
     r.add_argument("--json", action="store_true",
                    help="print the raised gate as JSON (the shape `show --json` prints); "
                         "advice goes to stderr so stdout is one object")
     r.add_argument("--quiet", action="store_true",
-                   help="print the new gate's id and nothing else on stdout, for "
+                   help="print the gate's id and nothing else on stdout, for "
                         "`$(...)` capture; advice goes to stderr")
     r.set_defaults(fn=cmd_raise)
 

@@ -817,9 +817,9 @@ def _repair_storage(db: Path) -> dict:
     return family
 
 
-def _verify_environment(environment: Path, code: str, db: Path, *, label: str) -> dict:
+def _verify_environment(environment: Path, db: Path, *, label: str) -> dict:
     completed = _run(
-        [str(environment / "bin" / "python"), "-c", code, str(db)],
+        [str(environment / "bin" / "python"), "-I", str(prepare_upgrade.VERIFIER), label, str(db)],
         cwd=environment,
         capture=True,
         isolated_python=True,
@@ -1414,7 +1414,6 @@ def apply_upgrade(
             _write_journal(journal, journal_document, repo)
             candidate_result = _verify_environment(
                 candidate_release,
-                prepare_upgrade._verifier_code(),
                 db,
                 label="candidate",
             )
@@ -1423,7 +1422,6 @@ def apply_upgrade(
                 raise RolloutError("candidate live verification differs from the rehearsal")
             rollback_result = _verify_environment(
                 rollback_release,
-                prepare_upgrade._rollback_verifier_code(),
                 db,
                 label="rollback",
             )
