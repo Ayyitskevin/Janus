@@ -613,6 +613,7 @@ def _validate_record(record: dict[str, Any], path: str) -> tuple[str, str]:
     if not isinstance(gate_id, str) or not _GATE_ID_RE.fullmatch(gate_id):
         raise JanusError(f"cannot verify export: {path}.id is incompatible")
     state = record["state"]
+    _string(state, f"{path}.state")
     descriptor = _STATE_BY_WORD.get(state)
     if descriptor is None:
         raise JanusError(f"cannot verify export: unknown gate state {state!r}")
@@ -676,13 +677,7 @@ def _validate_record(record: dict[str, Any], path: str) -> tuple[str, str]:
     return record["raised_at"], gate_id
 
 
-def verify_export(raw: bytes | str) -> dict[str, Any]:
-    """Verify an export's schemas and digests, returning its document.
-
-    Successful verification proves content integrity only. It does not prove
-    who produced the bytes, whether they are fresh, or whether any action is
-    authorized.
-    """
+def _verified_envelope(raw: bytes | str) -> dict[str, Any]:
     try:
         text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
         envelope = json.loads(
@@ -691,8 +686,12 @@ def verify_export(raw: bytes | str) -> dict[str, Any]:
             parse_float=_reject_float,
             parse_constant=_reject_float,
         )
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return _validate_envelope(envelope)
+    except (ValueError, RecursionError) as exc:
         raise JanusError(f"cannot verify export: invalid UTF-8 JSON: {exc}") from exc
+
+
+def _validate_envelope(envelope: Any) -> dict[str, Any]:
     envelope = _exact_object(envelope, {"schema", "document", "integrity"}, "envelope")
     if envelope["schema"] != ENVELOPE_SCHEMA:
         raise JanusError(f"cannot verify export: expected schema {ENVELOPE_SCHEMA}")
@@ -728,7 +727,8 @@ def verify_export(raw: bytes | str) -> dict[str, Any]:
         "gate_kinds": list(core.KINDS),
         "binding_kinds": list(BINDING_KINDS),
     }
-    if vocabulary != expected_vocabulary:
+    # Python equality conflates 0/1 with false/true in the state descriptors.
+    if canonical_json(vocabulary) != canonical_json(expected_vocabulary):
         raise JanusError("cannot verify export: vocabulary is incompatible")
     records = document["records"]
     if not isinstance(records, list):
@@ -763,4 +763,63 @@ def verify_export(raw: bytes | str) -> dict[str, Any]:
         raise JanusError("cannot verify export: records are not in canonical order")
     if selected_gate is not None and seen_ids != {selected_gate}:
         raise JanusError("cannot verify export: exact-gate selection does not match its record")
-    return document
+    return envelope
+
+
+def verify_export(raw: bytes | str) -> dict[str, Any]:
+    """Verify an export's schemas and digests, returning its document.
+
+    Successful verification proves content integrity only. It does not prove
+    who produced the bytes, whether they are fresh, or whether any action is
+    authorized.
+    """
+    return _verified_envelope(raw)["document"]
+
+
+def verify_export_receipt(
+    raw: bytes | str, *, expect_gate: str | None = None, expect_document_sha256: str | None = None
+) -> dict[str, Any]:
+    """Summarize verified evidence after comparing any independent expectations."""
+    envelope = _verified_envelope(raw)
+    document = envelope["document"]
+    gate_id = document["selection"]["gate_id"]
+    digest = envelope["integrity"]["document_sha256"]
+    if expect_gate is not None:
+        if not isinstance(expect_gate, str) or not _GATE_ID_RE.fullmatch(expect_gate):
+            raise JanusError("cannot verify export: --expect-gate requires a Janus gate ID")
+        if gate_id != expect_gate:
+            raise JanusError(
+                f"cannot verify export: expected gate {expect_gate}, "
+                f"export selects {gate_id or 'the complete ledger'}"
+            )
+    if expect_document_sha256 is not None:
+        _sha256_string(expect_document_sha256, "--expect-document-sha256")
+        if digest != expect_document_sha256:
+            raise JanusError(
+                "cannot verify export: document digest does not match expected SHA-256"
+            )
+
+    records = document["records"]
+    decision = None
+    if gate_id is not None:
+        record = records[0]["record"]
+        event = record["terminal_event"]
+        selected_option = None
+        if event is not None and event["option_id"] is not None:
+            option = next(
+                item for item in record["options"] if item["option_id"] == event["option_id"]
+            )
+            selected_option = {"id": option["option_id"], "label": option["label"]}
+        decision = {
+            "question": record["question"],
+            "state": record["state"],
+            "consumer": record["consumer"],
+            "selected_option": selected_option,
+            "binding_evidence": event["binding_evidence"]["status"] if event is not None else None,
+        }
+    return {
+        "gate_id": gate_id,
+        "record_count": len(records),
+        "document_sha256": digest,
+        "decision": decision,
+    }

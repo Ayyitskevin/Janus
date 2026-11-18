@@ -8,11 +8,13 @@ told what is wrong and what to do instead.
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import shutil
 import statistics
 import subprocess
 import sys
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -268,6 +270,68 @@ def cmd_export(a, _conn=None) -> int:
     """Emit the stable interchange artifact without opening a writable ledger."""
     sys.stdout.buffer.write(stable_export.export_gates(a.db, a.gate_id))
     sys.stdout.buffer.write(b"\n")
+    return 0
+
+
+def _human_export_receipt(receipt: dict) -> str:
+    lines = [
+        f"Verified selection: {receipt['gate_id'] or 'complete ledger'}",
+        f"Records: {receipt['record_count']}",
+        f"Document SHA-256: {receipt['document_sha256']}",
+    ]
+    decision = receipt["decision"]
+    if decision is not None:
+        lines.extend([
+            f"Question: {ascii(decision['question'])}",
+            f"State: {decision['state']}",
+            f"Consumer: {ascii(decision['consumer'])}",
+        ])
+        option = decision["selected_option"]
+        if option is not None:
+            lines.append(f"Selected option: {ascii(option['id'])} {ascii(option['label'])}")
+        if decision["binding_evidence"] is not None:
+            lines.append(f"Binding evidence: {decision['binding_evidence']}")
+    return "\n".join(lines)
+
+
+def _read_export_stdin() -> bytes:
+    if sys.stdin is None:
+        raise JanusError("standard input is unavailable")
+    data = io.BytesIO()
+    while True:
+        chunk = sys.stdin.buffer.read(64 * 1024)
+        if chunk is None:
+            raise JanusError("standard input would block before the export ended")
+        if not chunk:
+            return data.getvalue()
+        data.write(chunk)
+
+
+def cmd_verify_export(a) -> int:
+    """Verify a transported artifact without opening a ledger."""
+    try:
+        raw = _read_export_stdin() if a.file == "-" else Path(a.file).read_bytes()
+        receipt = stable_export.verify_export_receipt(
+            raw, expect_gate=a.expect_gate, expect_document_sha256=a.expect_document_sha256,
+        )
+        if a.json:
+            text = json.dumps(receipt, separators=(",", ":"))
+        else:
+            text = _human_export_receipt(receipt)
+        if sys.stdout is None:
+            raise JanusError("standard output is unavailable")
+        try:
+            print(text, flush=True)
+        except OSError:
+            # Prevent interpreter shutdown from retrying a failed buffered write
+            # and replacing the verification command's exit status.
+            if sys.stdout is sys.__stdout__:
+                with suppress(OSError):
+                    sys.stdout.close()
+            raise
+    except (JanusError, OSError, ValueError) as exc:
+        # Diagnostics can quote a filename, record ID, or key from the input.
+        raise JanusError(ascii(str(exc))[1:-1]) from exc
     return 0
 
 
@@ -1179,6 +1243,14 @@ def build_parser() -> argparse.ArgumentParser:
     ex.add_argument("gate_id", nargs="?", help="one gate; omit for the complete ledger")
     ex.set_defaults(fn=cmd_export)
 
+    ve = sub.add_parser("verify-export", help="verify an exported decision offline")
+    ve.add_argument("file", metavar="FILE|-", help="export file, or - for standard input")
+    ve.add_argument("--expect-gate", metavar="ID", help="require this exact gate selection")
+    ve.add_argument("--expect-document-sha256", metavar="HEX",
+                    help="require this canonical document SHA-256 from a trusted handoff")
+    ve.add_argument("--json", action="store_true", help="emit the verified receipt as JSON")
+    ve.set_defaults(fn=cmd_verify_export)
+
     ctx = sub.add_parser(
         "context",
         help="append the facts a future policy may evaluate (never a decision)",
@@ -1301,7 +1373,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        if args.cmd == "export":
+        if args.cmd in ("export", "verify-export"):
             return args.fn(args)
         if args.cmd == "list" and args.unmeasured_delivery:
             return cmd_list_unmeasured_delivery(args)
