@@ -237,6 +237,22 @@ def test_would_block_stdin_is_an_input_error(has_export):
         _assert_stream_refusal(["-"], stdin=pipe)
 
 
+def test_nonblocking_stdin_with_eof_verifies_against_pins():
+    reader, writer = os.pipe()
+    with os.fdopen(reader, "rb") as pipe:
+        os.set_blocking(pipe.fileno(), False)
+        with os.fdopen(writer, "wb") as producer:
+            compact = json.dumps(json.loads(GOLDEN.read_bytes()), separators=(",", ":"))
+            producer.write(compact.encode())
+        command = [sys.executable, "-E", "-m", "janus.cli", "verify-export", "-", "--json",
+                   "--expect-gate", GATE, "--expect-document-sha256", PIN]
+        result = subprocess.run(command, cwd=Path(__file__).resolve().parents[1] / "src",
+                                stdin=pipe, capture_output=True, timeout=10)
+    assert result.returncode == 0 and not result.stderr
+    receipt = json.loads(result.stdout)
+    assert receipt["gate_id"] == GATE and receipt["document_sha256"] == PIN
+
+
 def test_missing_stdout_is_an_output_error():
     _assert_stream_refusal([str(GOLDEN)], shell_setup="exec 1>&-")
 

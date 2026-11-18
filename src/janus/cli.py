@@ -8,8 +8,8 @@ told what is wrong and what to do instead.
 from __future__ import annotations
 
 import argparse
+import io
 import json
-import os
 import shutil
 import statistics
 import subprocess
@@ -294,20 +294,23 @@ def _human_export_receipt(receipt: dict) -> str:
     return "\n".join(lines)
 
 
+def _read_export_stdin() -> bytes:
+    if sys.stdin is None:
+        raise JanusError("standard input is unavailable")
+    data = io.BytesIO()
+    while True:
+        chunk = sys.stdin.buffer.read(64 * 1024)
+        if chunk is None:
+            raise JanusError("standard input would block before the export ended")
+        if not chunk:
+            return data.getvalue()
+        data.write(chunk)
+
+
 def cmd_verify_export(a) -> int:
     """Verify a transported artifact without opening a ledger."""
     try:
-        if a.file == "-":
-            if sys.stdin is None:
-                raise JanusError("standard input is unavailable")
-            # A nonblocking read can return a valid JSON prefix before EOF.
-            if sys.stdin is sys.__stdin__ and not os.get_blocking(sys.stdin.fileno()):
-                raise JanusError("standard input must be a blocking stream")
-            raw = sys.stdin.buffer.read()
-            if raw is None:
-                raise JanusError("standard input would block")
-        else:
-            raw = Path(a.file).read_bytes()
+        raw = _read_export_stdin() if a.file == "-" else Path(a.file).read_bytes()
         receipt = stable_export.verify_export_receipt(
             raw, expect_gate=a.expect_gate, expect_document_sha256=a.expect_document_sha256,
         )
