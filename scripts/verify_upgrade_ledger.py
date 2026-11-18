@@ -1,7 +1,7 @@
 """Read rollout evidence consistently in the host, candidate and rollback environments.
 
-The preparation and apply drivers invoke this file with the wheel's isolated
-Python. Opening with that installed Janus version performs its normal migrations.
+The drivers capture this source at startup and run it with each wheel's
+isolated Python. The installed Janus version performs its normal migrations.
 """
 
 from __future__ import annotations
@@ -17,24 +17,37 @@ LEDGER_TABLES = ("gates", "gate_options", "rulings", "observations", "check_revi
                  "audit_events")
 
 
+def _raise_requests(connection: sqlite3.Connection) -> list[list[str]]:
+    registered = connection.execute(
+        "SELECT 1 FROM schema_migrations WHERE version = '0006_raise_request_id'"
+    ).fetchone()
+    obj = connection.execute(
+        "SELECT type FROM sqlite_schema WHERE name = 'raise_requests'"
+    ).fetchone()
+    if registered is None and obj is None:
+        return []
+    if registered is None or obj is None or obj[0] != "table":
+        raise sqlite3.IntegrityError("raise_requests table and migration 0006 disagree")
+    if connection.execute("PRAGMA foreign_key_check(raise_requests)").fetchone() is not None:
+        raise sqlite3.IntegrityError("raise_requests contains a missing gate")
+    return [list(row) for row in connection.execute(
+        "SELECT request_id, gate_id FROM raise_requests ORDER BY request_id COLLATE BINARY"
+    )]
+
+
 def ledger_content(connection: sqlite3.Connection) -> tuple[dict[str, int], dict[str, str]]:
     counts = {}
     digests = {}
+    requests = _raise_requests(connection)
     for table in LEDGER_TABLES:
         cursor = connection.execute(f"SELECT * FROM {table}")
         columns = [item[0] for item in cursor.description]
         rows = [list(row) for row in cursor.fetchall()]
-        if table == "gates" and "request_id" in columns:
-            index = columns.index("request_id")
-            # Migration 0006 leaves old gates unkeyed. Their v1 digest stays
-            # comparable to a pre-migration receipt until the first keyed raise.
-            if all(row[index] is None for row in rows):
-                columns.pop(index)
-                for row in rows:
-                    row.pop(index)
         rows.sort(key=lambda row: json.dumps(row, ensure_ascii=False, separators=(",", ":")))
-        content = json.dumps({"columns": columns, "rows": rows}, ensure_ascii=False,
-                             separators=(",", ":")).encode()
+        payload = {"columns": columns, "rows": rows}
+        if table == "gates" and requests:
+            payload["raise_requests"] = requests
+        content = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
         counts[table] = len(rows)
         digests[table] = hashlib.sha256(content).hexdigest()
     return counts, digests
@@ -48,6 +61,7 @@ def main() -> None:
     parser.add_argument("db", type=Path)
     args = parser.parse_args()
     with closing(core.connect(args.db)) as connection:
+        connection.execute("BEGIN")
         integrity = [row[0] for row in connection.execute("PRAGMA integrity_check")]
         migrations = [dict(row) for row in connection.execute(
             "SELECT version, checksum FROM schema_migrations ORDER BY version")]

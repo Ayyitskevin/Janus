@@ -27,8 +27,8 @@ sys.path.insert(0, str(PROJECT / "src"))
 from janus import core  # noqa: E402
 
 
-def _load_script():
-    spec = importlib.util.spec_from_file_location("janus_prepare_upgrade", SCRIPT)
+def _load_script(path=SCRIPT):
+    spec = importlib.util.spec_from_file_location("janus_prepare_upgrade", path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -194,6 +194,32 @@ def test_content_digest_detects_same_count_ledger_rewrite(tmp_path):
     assert before["counts"] == after["counts"]
     assert before["content_sha256"]["gates"] != after["content_sha256"]["gates"]
     connection.close()
+
+
+def test_installed_verifiers_keep_driver_startup_source_after_checkout_changes(tmp_path):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    driver_path = scripts / SCRIPT.name
+    shutil.copyfile(SCRIPT, driver_path)
+    verifier = scripts / "verify_upgrade_ledger.py"
+    shutil.copyfile(SCRIPT.with_name(verifier.name), verifier)
+    driver = _load_script(driver_path)
+    verifier.write_text("raise RuntimeError('late verifier source was loaded')")
+
+    db, _, _ = _legacy_ledger(tmp_path)
+    connection = core.connect(db)
+    try:
+        core.raise_gate(connection, question="Print a second map?", kind="taste",
+                        consumer="print desk", decay="window closes", actor="tester",
+                        request_id="map.2")
+        expected = driver._database_facts(connection)
+    finally:
+        connection.close()
+    for role in ("candidate", "rollback"):
+        result = _run(*driver.verifier_command(Path(sys.executable), role, db), cwd=tmp_path)
+        observed = json.loads(result.stdout)
+        assert observed["counts"] == expected["counts"]
+        assert observed["content_sha256"] == expected["content_sha256"]
 
 
 def test_end_to_end_bundle_is_private_exact_and_non_deploying(tmp_path):

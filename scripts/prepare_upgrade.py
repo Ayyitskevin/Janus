@@ -24,14 +24,23 @@ import tempfile
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
-
-from verify_upgrade_ledger import LEDGER_TABLES as LEDGER_TABLES
-from verify_upgrade_ledger import ledger_content
+from types import ModuleType
 
 SCHEMA = "janus.upgrade-preparation.v1"
 PRIVATE_DIRECTORY_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
-VERIFIER = Path(__file__).resolve().with_name("verify_upgrade_ledger.py")
+
+# Keep the same verifier throughout a rollout, including after the checkout
+# was validated and the maintenance entry took effect.
+_verifier_file = Path(__file__).resolve().with_name("verify_upgrade_ledger.py")
+_VERIFIER_SOURCE = _verifier_file.read_text(encoding="utf-8")
+_verifier = ModuleType("janus_rollout_verifier")
+exec(compile(_VERIFIER_SOURCE, str(_verifier_file), "exec"), _verifier.__dict__)
+LEDGER_TABLES = _verifier.LEDGER_TABLES
+
+
+def verifier_command(python: Path, role: str, db: Path) -> list[str]:
+    return [str(python), "-I", "-c", _VERIFIER_SOURCE, role, str(db)]
 
 
 class PreparationError(RuntimeError):
@@ -292,7 +301,7 @@ def _database_facts(connection: sqlite3.Connection) -> dict[str, object]:
             "SELECT version, checksum FROM schema_migrations ORDER BY version"
         )
     ]
-    counts, content_sha256 = ledger_content(connection)
+    counts, content_sha256 = _verifier.ledger_content(connection)
     return {
         "integrity_check": "ok",
         "migrations": migrations,
@@ -405,7 +414,7 @@ def _installed_verification(
     )
     return _json_result(
         _run(
-            [str(python), "-I", str(VERIFIER), role, str(rehearsal_db)],
+            verifier_command(python, role, rehearsal_db),
             cwd=work,
             capture=True,
             isolated_python=True,

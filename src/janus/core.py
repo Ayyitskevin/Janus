@@ -909,13 +909,29 @@ def new_id() -> str:
     return "g" + uuid.uuid4().hex[:11]
 
 
+def _claim_raise_request(conn: sqlite3.Connection, request_id: str, gate_id: str) -> bool:
+    # This one write statement serializes contenders before testing the key.
+    # Finish it before reading changes(): PRAGMA count_changes can make an
+    # INSERT return a row, with rowcount still zero until that row is consumed.
+    conn.execute(
+        "INSERT INTO raise_requests (request_id, gate_id) SELECT ?, ?"
+        " WHERE NOT EXISTS (SELECT 1 FROM raise_requests WHERE request_id = ?)",
+        (request_id, gate_id, request_id),
+    ).fetchall()
+    return conn.execute("SELECT changes()").fetchone()[0] == 1
+
+
 def _replayed_gate(conn: sqlite3.Connection, request_id: str,
                    fields: dict, options: list[tuple]) -> str:
     # Compare the immutable inputs stored by the original raise. Later rulings
     # and revisions, and the identity of this caller, do not define a request.
     columns = ", ".join(fields)
-    row = conn.execute(f"SELECT id, {columns} FROM gates WHERE request_id = ?",
-                       (request_id,)).fetchone()
+    row = conn.execute(
+        f"SELECT gates.id, {columns} FROM raise_requests JOIN gates ON gates.id = gate_id"
+        " WHERE request_id = ?", (request_id,),
+    ).fetchone()
+    if row is None:
+        raise JanusError(f"request ID {request_id!r} has no associated gate")
     gid = row[0]
     original_options = [tuple(option) for option in conn.execute(
         "SELECT position, option_id, label, detail, recommended FROM gate_options"
@@ -971,32 +987,25 @@ def raise_gate(
     ]
     gid = new_id()
     record = dict(id=gid, raised_at=now(), raised_by=actor, **fields)
-    on_conflict = ""
-    if request_id is not None:
-        record["request_id"] = request_id
-        on_conflict = " ON CONFLICT(request_id) WHERE request_id IS NOT NULL DO NOTHING"
     columns = ", ".join(record)
     placeholders = ", ".join("?" for _ in record)
-    # Insert first so competing writers serialize on the unique key. A
-    # savepoint keeps a failed option or audit insert from consuming the key,
+    # A savepoint keeps a failed gate, option or audit insert from consuming the key,
     # including when the caller already has a transaction on this connection.
     conn.execute("SAVEPOINT janus_raise_gate")
     try:
-        inserted = conn.execute(
-            f"INSERT INTO gates ({columns}) VALUES ({placeholders}){on_conflict}",
-            tuple(record.values()),
-        ).rowcount
-        if inserted:
-            conn.executemany(
-                "INSERT INTO gate_options (gate_id, position, option_id, label, detail,"
-                " recommended) VALUES (?,?,?,?,?,?)",
-                ((gid, *option) for option in option_rows),
-            )
-            audit(conn, actor, "raise", gid, question[:120])
-            conn.execute("COMMIT")
-        else:
+        if request_id is not None and not _claim_raise_request(conn, request_id, gid):
             gid = _replayed_gate(conn, request_id, fields, option_rows)
             conn.execute("RELEASE janus_raise_gate")
+            return gid
+        conn.execute(f"INSERT INTO gates ({columns}) VALUES ({placeholders})",
+                     tuple(record.values())).close()
+        for option in option_rows:
+            conn.execute(
+                "INSERT INTO gate_options (gate_id, position, option_id, label, detail,"
+                " recommended) VALUES (?,?,?,?,?,?)", (gid, *option),
+            ).close()
+        audit(conn, actor, "raise", gid, question[:120])
+        conn.execute("COMMIT")
     except BaseException as exc:
         if conn.in_transaction:
             conn.execute("ROLLBACK TO janus_raise_gate")
@@ -1108,7 +1117,6 @@ def get_gate(conn: sqlite3.Connection, gate_id: str) -> dict | None:
     if row is None:
         return None
     gate = dict(row)
-    gate.pop("request_id", None)  # Writer retry key; keep the public gate projection stable.
     r = conn.execute("SELECT * FROM rulings WHERE gate_id = ?", (gate_id,)).fetchone()
     gate["ruling"] = dict(r) if r else None
     gate["state"] = r["state"] if r else "open"

@@ -133,10 +133,10 @@ def test_concurrent_first_writers_share_only_matching_requests(tmp_path, differe
             consumer = seat if different_inputs else "both"
             try:
                 return _raise(conn, seat=seat, consumer=consumer)
-            except core.JanusError:
-                # Conflicts, unlike lock/setup failures, leave the winning payload readable.
+            except core.JanusError as exc:
                 if not different_inputs:
                     raise
+                assert "conflict" in str(exc)
                 rows = core.list_gates(conn)
                 assert len(rows) == 1 and rows[0]["consumer"] != consumer
                 return None
@@ -151,12 +151,32 @@ def test_concurrent_first_writers_share_only_matching_requests(tmp_path, differe
             ("raise", gate["raised_by"])]
 
 
+@pytest.mark.parametrize("key", [None, PACKET])
+@pytest.mark.parametrize("options", [[], OPTIONS], ids=["plain", "has-options"])
+def test_count_changes_does_not_change_raise_or_replay(tmp_path, key, options):
+    with closing(core.connect(tmp_path / "janus.db")) as conn:
+        conn.execute("PRAGMA count_changes = ON")
+        assert conn.execute("PRAGMA count_changes").fetchone()[0] == 1
+        first = _raise(conn, key=key, options=options)
+        second = _raise(conn, seat="next", key=key, options=options)
+        expected_ids = {first} if key is not None else {first, second}
+        assert (first == second) == (key is not None)
+        assert {r[0] for r in conn.execute("SELECT id FROM gates")} == expected_ids
+        assert {tuple(r) for r in conn.execute(
+            "SELECT gate_id, COUNT(*) FROM audit_events WHERE verb='raise' GROUP BY gate_id"
+        )} == {(gid, 1) for gid in expected_ids}
+        for gid in expected_ids:
+            assert [r[0] for r in conn.execute(
+                "SELECT option_id FROM gate_options WHERE gate_id=? ORDER BY position", (gid,)
+            )] == [o["id"] for o in options]
+
+
 def test_failed_option_write_leaves_key_reusable_on_same_connection(tmp_path):
     with closing(core.connect(tmp_path / "janus.db")) as conn:
         duplicate_options = [OPTIONS[0], OPTIONS[0]]
         with pytest.raises((core.JanusError, sqlite3.IntegrityError)):
             _raise(conn, options=duplicate_options)
-        for table in ("gates", "gate_options", "audit_events"):
+        for table in ("gates", "gate_options", "audit_events", "raise_requests"):
             assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
         gid = _raise(conn, options=OPTIONS)
         assert core.get_gate(conn, gid)["state"] == "open"
@@ -172,7 +192,7 @@ def test_migration_keeps_legacy_and_unkeyed_raises_independent(tmp_path, monkeyp
     with monkeypatch.context() as patch:
         patch.setattr(core, "MIGRATIONS_DIR", legacy)
         with closing(core.connect(db)) as conn:
-            assert "request_id" not in {r[1] for r in conn.execute("PRAGMA table_info(gates)")}
+            old_columns = [c[0] for c in conn.execute("SELECT * FROM gates").description]
             conn.execute(
                 "INSERT INTO gates(id,raised_at,raised_by,question,kind,decay,consumer)"
                 " VALUES('g123456789ab','2026-04-01','first',:question,:kind,:decay,:consumer)",
@@ -184,12 +204,35 @@ def test_migration_keeps_legacy_and_unkeyed_raises_independent(tmp_path, monkeyp
         keyed = _raise(conn)
         assert _raise(conn) == keyed
         assert len({"g123456789ab", *loose, keyed}) == 4
-        assert [r[0] for r in conn.execute(
-            "SELECT request_id FROM gates WHERE request_id IS NOT NULL"
-        )] == [PACKET]
-        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
-            conn.execute(
-                "INSERT INTO gates(id,raised_at,raised_by,question,kind,decay,consumer,request_id)"
-                " SELECT 'g23456789abc',raised_at,raised_by,question,kind,decay,consumer,request_id"
-                " FROM gates WHERE id=?", (keyed,),
-            )
+        # Already-installed readers use SELECT * for gate JSON. Their view must
+        # keep the old keys even after a newer writer starts recording requests.
+        historical_projection = dict(conn.execute(
+            "SELECT * FROM gates WHERE id=?", (keyed,)
+        ).fetchone())
+        assert list(historical_projection) == old_columns
+        assert PACKET not in historical_projection.values()
+        assert [tuple(r) for r in conn.execute(
+            "SELECT request_id, gate_id FROM raise_requests"
+        )] == [(PACKET, keyed)]
+
+
+def test_request_mapping_cannot_be_deleted_reassigned_or_replaced(tmp_path):
+    with closing(core.connect(tmp_path / "janus.db")) as conn:
+        original = _raise(conn)
+        other = _raise(conn, key=None)
+        # Exercise SQLite REPLACE's implicit delete under its default trigger setting.
+        conn.execute("PRAGMA recursive_triggers = OFF")
+        writes = [
+            ("UPDATE raise_requests SET gate_id=? WHERE request_id=?", (other, PACKET)),
+            ("DELETE FROM raise_requests WHERE request_id=?", (PACKET,)),
+            ("INSERT INTO raise_requests(request_id,gate_id) VALUES(?,?)", (PACKET, other)),
+            ("INSERT INTO raise_requests(request_id,gate_id) VALUES(?,?)", ("new-key", original)),
+            ("INSERT OR REPLACE INTO raise_requests VALUES(?,?)", (PACKET, other)),
+            ("INSERT OR REPLACE INTO raise_requests VALUES(?,?)", ("new-key", original)),
+        ]
+        for statement, params in writes:
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute(statement, params)
+        assert [tuple(r) for r in conn.execute(
+            "SELECT request_id, gate_id FROM raise_requests"
+        )] == [(PACKET, original)]

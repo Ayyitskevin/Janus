@@ -120,7 +120,8 @@ def _committed_copy(root: Path) -> tuple[Path, str, str]:
     return repo, rollback, candidate
 
 
-def test_freshness_preserves_unkeyed_gate_digests_and_rejects_a_changed_request_id(tmp_path):
+@pytest.mark.parametrize("rewrite", ["request_id", "gate_id", "delete"])
+def test_freshness_preserves_legacy_digests_and_rejects_changed_request_mapping(tmp_path, rewrite):
     db = _legacy_ledger(tmp_path)
     legacy, _ = apply_upgrade._snapshot_facts(db)
     connection = core.connect(db)
@@ -132,12 +133,40 @@ def test_freshness_preserves_unkeyed_gate_digests_and_rejects_a_changed_request_
             decay="the printing window closes", actor="tester", request_id="map.edition",
         )
         prepared, _ = apply_upgrade._snapshot_facts(db)
-        # Simulate a rewrite with the same row counts and migration history.
-        connection.execute("DROP TRIGGER gates_no_update")
-        connection.execute("UPDATE gates SET request_id = 'map.other' WHERE request_id IS NOT NULL")
+        # Simulate divergent mapping state with identical gates and migration history.
+        if rewrite == "delete":
+            connection.execute("DROP TRIGGER raise_requests_no_delete")
+            connection.execute("DELETE FROM raise_requests")
+        else:
+            connection.execute("DROP TRIGGER raise_requests_no_update")
+            if rewrite == "gate_id":
+                connection.execute(
+                    "UPDATE raise_requests SET gate_id = "
+                    "(SELECT id FROM gates WHERE id != raise_requests.gate_id)"
+                )
+            else:
+                connection.execute("UPDATE raise_requests SET request_id = 'map.other'")
         connection.commit()
         with pytest.raises(apply_upgrade.RolloutError, match="changed.*content_sha256"):
             apply_upgrade._require_fresh_snapshot({"backup": prepared}, db)
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("remove", ["mapping_table", "migration_record"])
+def test_snapshot_refuses_inconsistent_raise_mapping_migration(tmp_path, remove):
+    db = _legacy_ledger(tmp_path)
+    connection = core.connect(db)
+    try:
+        if remove == "mapping_table":
+            connection.execute("DROP TABLE raise_requests")
+        else:
+            connection.execute(
+                "DELETE FROM schema_migrations WHERE version = '0006_raise_request_id'"
+            )
+        connection.commit()
+        with pytest.raises(apply_upgrade.RolloutError, match="table and migration 0006 disagree"):
+            apply_upgrade._snapshot_facts(db)
     finally:
         connection.close()
 

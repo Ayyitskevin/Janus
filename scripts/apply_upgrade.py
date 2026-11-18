@@ -819,7 +819,7 @@ def _repair_storage(db: Path) -> dict:
 
 def _verify_environment(environment: Path, db: Path, *, label: str) -> dict:
     completed = _run(
-        [str(environment / "bin" / "python"), "-I", str(prepare_upgrade.VERIFIER), label, str(db)],
+        prepare_upgrade.verifier_command(environment / "bin" / "python", label, db),
         cwd=environment,
         capture=True,
         isolated_python=True,
