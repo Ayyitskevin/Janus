@@ -145,7 +145,7 @@ If the raise response was lost, a fresh conductor can recover the gate from
 the same ledger with just the request ID saved in its work packet:
 
 ```bash
-janus export --request-id gallery/contact-sheet-margin-1 > decision.json
+janus export --request-id gallery/contact-sheet-margin-1 --output decision.json
 ```
 
 The export contains the decision as recorded at read time, including any later
@@ -154,6 +154,21 @@ the same snapshot. The conductor can recover it even if the original bound
 file has moved. An unknown request ID exits 2 with a diagnostic on stderr and
 empty stdout. Pass a successful export to the reviewer with independently
 trusted gate and digest expectations for `janus verify-export`.
+
+Use `--output FILE` to publish a handoff. It works with any export selector.
+Janus stages the complete export beside the destination with mode 0600 and
+replaces the destination in one rename. A successful file export writes
+nothing to stdout. If the ledger is unavailable or publication fails, an
+earlier handoff stays intact. Report recovery as pending and retry the same
+request on its owning ledger. A file left from an earlier run can describe
+a different decision or an older version.
+
+Choose an existing output directory where another OS user cannot replace
+your files. Janus checks directory ownership and permissions and refuses
+non-sticky group- or world-writable parents. An existing destination must be
+a regular file. The source ledger and its SQLite sidecar names are reserved.
+To stream the same JSON and trailing newline, omit `--output` or use
+`--output -`.
 
 Decision contexts and structured human feedback are typed append-only audit
 events, so the unchanged export v1 envelope carries their exact bytes and

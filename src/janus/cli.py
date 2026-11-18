@@ -10,7 +10,10 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os
+import secrets
 import shutil
+import stat
 import statistics
 import subprocess
 import sys
@@ -266,17 +269,82 @@ def cmd_show(a, conn) -> int:
     return 0
 
 
+def _check_export_target(directory: int, name: str, ledger: Path) -> None:
+    if name in {ledger.name + suffix for suffix in ("", "-wal", "-shm", "-journal")}:
+        try:
+            ledger_directory = ledger.parent.stat()
+        except FileNotFoundError:
+            pass  # The snapshot will report the missing ledger.
+        else:
+            if os.path.samestat(ledger_directory, os.fstat(directory)):
+                raise JanusError("cannot export: output would replace the source ledger or sidecar")
+    try:
+        target = os.stat(name, dir_fd=directory, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if not stat.S_ISREG(target.st_mode):
+        raise JanusError("cannot export: existing output must be a regular file")
+
+
+def _publish_export(directory: int, name: str, artifact: bytes, ledger: Path) -> None:
+    temporary = f".janus-export-{secrets.token_hex(16)}"
+    if temporary == name:
+        temporary += ".tmp"
+    fd = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600, dir_fd=directory)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(artifact)
+            stream.write(b"\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        _check_export_target(directory, name, ledger)
+        os.replace(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+    except BaseException:
+        os.unlink(temporary, dir_fd=directory)
+        raise
+
+
+def _export_to_file(
+    output: str, db_path: Path | None, gate: str | None, request: str | None
+) -> None:
+    parent, name = os.path.split(output)
+    if name in ("", ".", ".."):
+        raise JanusError("cannot export: --output requires a file name")
+    ledger = core.storage_path(db_path)
+    parent = parent or "."
+    directory = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        resolved = Path(os.path.realpath(parent, strict=True))
+        finding = core._directory_chain_finding(resolved, private_leaf=False, protect_child=True)
+        if finding:
+            raise JanusError(f"cannot export: unsafe output directory: {finding}")
+        if not os.path.samestat(os.fstat(directory), resolved.stat()):
+            raise JanusError("cannot export: output directory changed during validation")
+        _check_export_target(directory, name, ledger)
+        artifact = stable_export.export_gates(ledger, gate, request_id=request)
+        _publish_export(directory, name, artifact, ledger)
+    finally:
+        os.close(directory)
+
+
 def cmd_export(a, _conn=None) -> int:
     """Emit the stable interchange artifact without opening a writable ledger."""
     request_ids = a.request_ids or []
     if len(request_ids) > 1:
         raise JanusError("supply --request-id only once")
     request_id = request_ids[0] if request_ids else None
+    outputs = a.outputs or []
+    if len(outputs) > 1:
+        raise JanusError("supply --output only once")
     try:
+        if outputs and outputs[0] != "-":
+            _export_to_file(outputs[0], a.db, a.gate_id, request_id)
+            return 0
         artifact = stable_export.export_gates(a.db, a.gate_id, request_id=request_id)
-    except JanusError as exc:
-        # A storage refusal can include an untrusted ledger path.
-        if str(exc).isprintable():
+    except (JanusError, OSError) as exc:
+        # Both storage checks and publication errors can include an untrusted path.
+        if isinstance(exc, JanusError) and str(exc).isprintable():
             raise
         raise JanusError(ascii(str(exc))[1:-1]) from exc
     sys.stdout.buffer.write(artifact)
@@ -1261,6 +1329,8 @@ def build_parser() -> argparse.ArgumentParser:
     select.add_argument("gate_id", nargs="?", help="one gate by generated ID")
     select.add_argument("--request-id", metavar="ID", dest="request_ids", action="append",
                         help="one gate by its saved raise request ID on this ledger")
+    ex.add_argument("--output", metavar="FILE", dest="outputs", action="append",
+                    help="atomically publish to FILE on success (default or -: stdout)")
     ex.epilog = "Omit both selectors to export the complete ledger."
     ex.set_defaults(fn=cmd_export)
 
