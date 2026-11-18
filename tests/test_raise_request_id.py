@@ -218,6 +218,9 @@ def test_migration_keeps_legacy_and_unkeyed_raises_independent(tmp_path, monkeyp
 
 def test_request_mapping_cannot_be_deleted_reassigned_or_replaced(tmp_path):
     with closing(core.connect(tmp_path / "janus.db")) as conn:
+        # Only the two immutable keys may identify an association.
+        with pytest.raises(sqlite3.OperationalError, match="no such column"):
+            conn.execute("SELECT rowid FROM raise_requests")
         original = _raise(conn)
         other = _raise(conn, key=None)
         # Exercise SQLite REPLACE's implicit delete under its default trigger setting.

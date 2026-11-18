@@ -12,7 +12,7 @@ CREATE TABLE raise_requests (
         AND request_id NOT GLOB '*[^A-Za-z0-9._:/-]*'
     ),
     gate_id TEXT NOT NULL UNIQUE REFERENCES gates(id) DEFERRABLE INITIALLY DEFERRED
-);
+) WITHOUT ROWID;
 
 CREATE TRIGGER raise_requests_no_update BEFORE UPDATE ON raise_requests
 BEGIN SELECT RAISE(ABORT, 'janus: a raise request is immutable'); END;
