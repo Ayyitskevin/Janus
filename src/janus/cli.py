@@ -110,19 +110,39 @@ def _raise_advice(a, file=None) -> None:
 
 
 def cmd_list(a, conn) -> int:
-    gates = core.list_gates(conn, state=a.state)
+    state = a.state or "open"
+    gates = core.list_gates(conn, state=state)
     if a.json:
         print(json.dumps(gates, indent=2, default=str))
         return 0
     if not gates:
-        print(f"no {a.state} gates")
+        print(f"no {state} gates")
         return 0
-    print(f"{len(gates)} {a.state} gate(s)\n")
+    print(f"{len(gates)} {state} gate(s)\n")
     for g in gates:
         print(_fmt_gate_line(g))
         print(f"    waiting on: {g['consumer']}   raised {g['raised_at'][:10]} by {g['raised_by']}")
         if g["horizon"]:
             print(f"    horizon: {g['horizon']}")
+    return 0
+
+
+def cmd_list_unmeasured_delivery(a) -> int:
+    with stable_export.read_snapshot(a.db, operation="list") as (conn, _):
+        gates = [g for g in core.list_gates(conn, state="approved")
+                 if not g["effective_delivery_check"]]
+    if a.json:
+        print(json.dumps(gates, indent=2, default=str))
+    elif not gates:
+        print("No approved gates lack a delivery check.")
+    else:
+        print(f"{len(gates)} approved gate(s) with unmeasured delivery\n")
+        for g in gates:
+            print(f"{g['id']}  {g['question']}")
+            for option in g["options"]:
+                if option["option_id"] == g["ruling"]["option_id"]:
+                    print(f"    chose: {option['label']} ({option['option_id']})")
+            print(f"    consumer: {g['consumer']}")
     return 0
 
 
@@ -667,12 +687,12 @@ def cmd_board(a, conn) -> int:
                          "observation": observation})
     promised.sort(key=lambda r: (r["status"] != "not landed", -r["secs"]))
 
+    unwatched_hint = f"  Unmeasured approvals: {unwatched} · janus list --unmeasured-delivery"
     if not rows and not promised:
         print("Nothing is waiting on a human." if not unwatched else
               "No decision is waiting on a human.")
         if unwatched:
-            print(f"\n  {unwatched} approved gate(s) carry no delivery check —"
-                  " their consumer outcomes are unmeasured.")
+            print(f"\n{unwatched_hint}")
         return 0
 
     term = shutil.get_terminal_size(fallback=(100, 24))
@@ -780,10 +800,7 @@ def cmd_board(a, conn) -> int:
             )
 
     if unwatched:
-        output.append(
-            f"  {unwatched} approved gate(s) carry no delivery check —"
-            " their consumer outcomes are unmeasured."
-        )
+        output.append(unwatched_hint)
 
     output.extend(footer)
     fitted = [line if len(line) <= width else line[: width - 1] + "…" for line in output]
@@ -1145,8 +1162,11 @@ def build_parser() -> argparse.ArgumentParser:
     r.set_defaults(fn=cmd_raise)
 
     ls = sub.add_parser("list", help="list gates")
-    ls.add_argument("--state", default="open",
-                    choices=("open", "all", *core.TERMINAL_STATES))
+    selection = ls.add_mutually_exclusive_group()
+    selection.add_argument("--state", choices=("open", "all", *core.TERMINAL_STATES),
+                           help="gate state to list (default: open)")
+    selection.add_argument("--unmeasured-delivery", action="store_true",
+                           help="list approved gates without an effective delivery check")
     ls.add_argument("--json", action="store_true")
     ls.set_defaults(fn=cmd_list)
 
@@ -1286,6 +1306,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.cmd == "export":
             return args.fn(args)
+        if args.cmd == "list" and args.unmeasured_delivery:
+            return cmd_list_unmeasured_delivery(args)
         if args.cmd == "doctor":
             try:
                 conn = core.connect_existing(args.db)

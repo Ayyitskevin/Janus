@@ -24,6 +24,7 @@ janus --seat <seat> raise "<one sentence a tired human can answer>" \
 
 janus                      # the one screen: what is waiting, how long, what worsens
 janus board --all          # explicit board command; show rows below the first screen
+janus list --unmeasured-delivery  # approved decisions with no delivery check
 janus show <id>            # detail, and whether the binding still holds
 janus check <id>           # preview one stored command, confirm, then observe
 janus stats                # the dated scorecard: is anyone actually using this
@@ -115,9 +116,13 @@ export resume.
 Under its own heading the board also carries **PROMISED, NOT DELIVERED**: gates a
 human already approved whose `--delivery-check` has not yet succeeded. A ruling
 closes a *decision*; it does not make a credential, edit, or other consumer
-effect exist. Approved gates without a delivery check are counted as unmeasured
-rather than silently treated as acted on. A promise drops off the moment its own
-check passes.
+effect exist. A promise drops off the moment its own check passes.
+
+When approvals have no delivery check, the board links to
+`janus list --unmeasured-delivery`. It shows each full question, the chosen
+option when there is one, and the recorded consumer. Delivery is unknown for
+these gates. Adding a delivery check removes the gate from this list even
+before its first observation. Append `--json` for the ordinary list records.
 
 Four fields are mandatory and the schema refuses a gate without them. Bind the
 bytes with `--bind-kind file|git|text --bind <locator>`; offer alternatives with
