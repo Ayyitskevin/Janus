@@ -157,11 +157,30 @@ trusted gate and digest expectations for `janus verify-export`.
 
 Use `--output FILE` to publish a handoff. It works with any export selector.
 Janus stages the complete export beside the destination with mode 0600 and
-replaces the destination in one rename. A successful file export writes
+replaces the destination in one rename. By default, a successful file export writes
 nothing to stdout. If the ledger is unavailable or publication fails, an
 earlier handoff stays intact. Report recovery as pending and retry the same
 request on its owning ledger. A file left from an earlier run can describe
 a different decision or an older version.
+
+When handing one decision to a consumer, add `--receipt-json` to get the
+verification values for the exact snapshot published by this invocation:
+
+```bash
+janus export --request-id gallery/contact-sheet-margin-1 --output decision.json --receipt-json
+```
+
+After publication succeeds, stdout contains a single JSON object with
+`gate_id` and `document_sha256`, followed by a newline. This also works with
+a positional gate ID. It requires one selected decision and a file destination.
+Pass those two values to the consumer through a separate trusted work packet.
+The consumer can then check the file with `verify-export`, even if another
+publisher has since replaced the delivery path.
+
+A lookup or publication failure emits no receipt. If writing the receipt
+fails after the rename, Janus exits nonzero and reports that the file was
+published. Treat the receipt as unavailable. Retrying publishes the snapshot
+available at retry time. Use a complete receipt from a successful invocation.
 
 Choose an existing output directory where another OS user cannot replace
 your files. Janus checks directory ownership and permissions and refuses

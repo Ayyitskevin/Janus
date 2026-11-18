@@ -1,8 +1,11 @@
 """File publication through the same CLI and read-only export used by operators."""
 
+import json
 import os
 import sqlite3
 import stat
+import subprocess
+import sys
 from contextlib import closing
 from pathlib import Path
 
@@ -24,14 +27,14 @@ def ledger(tmp_path):
 
 
 @pytest.fixture
-def export(capsysbinary):
+def export(capfdbinary):
     def run(*args, db=None, status=0):
         prefix = ["--db", str(db)] if db is not None else []
         try:
             actual = cli.main([*prefix, "export", *map(str, args)])
         except SystemExit as exc:
             actual = exc.code
-        out, err = capsysbinary.readouterr()
+        out, err = capfdbinary.readouterr()
         assert actual == status, err
         if status:
             assert not out and err and b"unrecognized arguments" not in err
@@ -75,6 +78,123 @@ def test_literal_hyphen_and_repeated_output(ledger, export, tmp_path, monkeypatc
     assert Path("-").read_bytes() == expected
     export("--output", "first", "--output", "second", db=db, status=2)
     assert not Path("first").exists() and not Path("second").exists()
+
+
+def test_producer_receipt_selectors_share_v1_bytes_and_pins(ledger, export, tmp_path, monkeypatch):
+    db, gate = ledger
+    monkeypatch.chdir(tmp_path)
+    expected = export(gate, db=db)
+    digest = json.loads(expected)["integrity"]["document_sha256"]
+    for selector in ([gate], ["--request-id", "saved-key"]):
+        out = export(*selector, "--output", "./-", "--receipt-json", "--receipt-json", db=db)
+        assert out.endswith(b"\n") and len(out.splitlines()) == 1
+        assert json.loads(out) == {"gate_id": gate, "document_sha256": digest}
+        artifact = Path("-")
+        assert artifact.read_bytes() == expected and stat.S_IMODE(artifact.stat().st_mode) == 0o600
+        verified = stable_export.verify_export_receipt(
+            expected, expect_gate=gate, expect_document_sha256=digest,
+        )
+        assert verified["decision"]["state"] == "open"
+
+
+def test_receipt_argument_or_lookup_failure_preserves_prior_file(ledger, export, tmp_path):
+    db, gate = ledger
+    delivery = tmp_path / "decision"
+    previous = export(gate, db=db)
+    delivery.write_bytes(previous)
+    other = tmp_path / "other"
+    missing = tmp_path / "unavailable" / "ledger.db"
+    for source, args in (
+        (db, [gate]),
+        (db, [gate, "--output", "-"]),
+        (db, ["--output", delivery]),
+        (db, ["", "--output", delivery]),
+        (db, ["--request-id", "", "--output", delivery]),
+        (db, [gate, "--request-id", "saved-key", "--output", delivery]),
+        (db, ["--request-id", "saved-key", "--request-id", "saved-key", "--output", delivery]),
+        (db, [gate, "--output", delivery, "--output", other]),
+        (db, ["no-such-gate", "--output", delivery]),
+        (db, ["--request-id", "unknown", "--output", delivery]),
+        (missing, [gate, "--output", delivery]),
+    ):
+        export(*args, "--receipt-json", db=source, status=2)
+        assert delivery.read_bytes() == previous and not other.exists()
+    assert not missing.parent.exists()
+
+
+def test_receipts_follow_their_own_publication_when_another_writer_replaces_it(
+    ledger, export, tmp_path, monkeypatch, capfdbinary,
+):
+    db, gate = ledger
+    delivery = tmp_path / "decision"
+    first_bytes = export(gate, db=db)
+    real_replace = os.replace
+    real_snapshot = stable_export.read_snapshot
+    snapshots = []
+    second_receipts = []
+
+    def count_snapshot(*args, **kwargs):
+        snapshots.append(args)
+        return real_snapshot(*args, **kwargs)
+
+    def publish_competitor(source, target, **kwargs):
+        assert capfdbinary.readouterr() == (b"", b"")
+        real_replace(source, target, **kwargs)
+        assert delivery.read_bytes() == first_bytes
+        with closing(core.connect(db)) as conn:
+            core.close_gate(conn, gate, state="refused", reason="Hold delivery.", actor="owner")
+        with monkeypatch.context() as patch:
+            patch.setattr(os, "replace", real_replace)
+            second_receipts.append(export(gate, "--output", delivery, "--receipt-json", db=db))
+
+    monkeypatch.setattr(stable_export, "read_snapshot", count_snapshot)
+    monkeypatch.setattr(os, "replace", publish_competitor)
+    first = json.loads(export("--request-id", "saved-key", "--output", delivery,
+                              "--receipt-json", db=db))
+    assert len(second_receipts) == 1
+    second = json.loads(second_receipts[0])
+    assert len(snapshots) == 2
+    assert first["gate_id"] == second["gate_id"] == gate
+    assert first["document_sha256"] != second["document_sha256"]
+    versions = [(first_bytes, first, "open"), (delivery.read_bytes(), second, "refused")]
+    for data, pins, state in versions:
+        verified = stable_export.verify_export_receipt(
+            data, expect_gate=gate, expect_document_sha256=pins["document_sha256"],
+        )
+        assert verified["decision"]["state"] == state
+    with pytest.raises(core.JanusError, match="document digest does not match"):
+        stable_export.verify_export_receipt(first_bytes, expect_gate=gate,
+                                           expect_document_sha256=second["document_sha256"])
+
+
+@pytest.mark.parametrize("blocked", [False, True], ids=["closed-reader", "unbuffered-would-block"])
+def test_receipt_stream_failure_reports_committed_file(ledger, export, tmp_path, blocked):
+    db, gate = ledger
+    expected = export(gate, db=db)
+    delivery = tmp_path / "decision"
+    delivery.write_bytes(b"old delivery")
+    reader, writer = os.pipe()
+    with os.fdopen(reader, "rb") as receiver, os.fdopen(writer, "wb") as pipe:
+        python = [sys.executable, "-E"]
+        if blocked:
+            python.append("-u")
+            os.set_blocking(writer, False)
+            for chunk in (b"x" * 4096, b"x"):
+                with pytest.raises(BlockingIOError):
+                    while True:
+                        os.write(writer, chunk)
+        else:
+            receiver.close()
+        result = subprocess.run(
+            [*python, "-m", "janus.cli", "--db", str(db), "export", gate,
+             "--output", str(delivery), "--receipt-json"],
+            cwd=Path(__file__).resolve().parents[1] / "src",
+            stdout=pipe, stderr=subprocess.PIPE, timeout=10,
+        )
+    assert result.returncode != 0
+    assert delivery.read_bytes() == expected
+    assert len(result.stderr.splitlines()) == 1
+    assert b"published" in result.stderr.lower() and b"receipt" in result.stderr.lower()
 
 
 @pytest.mark.parametrize("prior", [False, True])
@@ -249,10 +369,11 @@ def test_publication_keeps_its_selected_directory(ledger, export, tmp_path, monk
 
 @pytest.mark.parametrize("stage", ["write", "flush", "close", "replace"])
 @pytest.mark.parametrize("prior", [False, True])
+@pytest.mark.parametrize("receipt", [False, True], ids=["plain", "receipt"])
 def test_publisher_io_errors_preserve_delivery_and_clean_only_its_temp(
-    ledger, export, tmp_path, monkeypatch, stage, prior,
+    ledger, export, tmp_path, monkeypatch, stage, prior, receipt,
 ):
-    db, _ = ledger
+    db, gate = ledger
     destination = tmp_path / "out" / "decision"
     destination.parent.mkdir(mode=0o700)
     neighbor = destination.with_name("other-publisher.tmp")
@@ -293,6 +414,7 @@ def test_publisher_io_errors_preserve_delivery_and_clean_only_its_temp(
         monkeypatch.setattr(os, "replace", fail)
     else:
         monkeypatch.setattr(os, "fdopen", FaultyWriter)
-    error = export("--output", destination, db=db, status=2)
+    args = [gate, "--receipt-json"] if receipt else []
+    error = export(*args, "--output", destination, db=db, status=2)
     assert f"injected {stage} error".encode() in error
     assert {path: path.read_bytes() for path in destination.parent.iterdir()} == before
