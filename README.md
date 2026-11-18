@@ -82,6 +82,25 @@ substitution, `raise --quiet` prints the bare id and nothing else on stdout. Cap
 into a lowercase name: under zsh, `GID`/`UID`/`EGID`/`EUID` are special parameters and
 assigning `GID=$(janus raise ...)` calls setgid(2), which fails with "(eval):1: failed to
 change group ID: operation not permitted" — a shell behavior, never a Janus one.
+
+For a decision that another agent may resume, save a request ID in the work
+packet before the first raise. Use the same ID and decision on every attempt:
+
+```bash
+janus --seat conductor raise "Use the wider margin on the contact sheet?" \
+  --kind taste --decay "The proof waits for layout approval." \
+  --consumer "Print builder applies the chosen margin." \
+  --request-id gallery/contact-sheet-margin-1 --quiet
+```
+
+On the same ledger, a retry returns the original gate ID, even from another
+seat or after a ruling. Use `--json` to read its current state and original
+raiser. Changing a raise field, the ordered options, or the resolved binding
+under the same ID produces a conflict. Inspect the original gate before
+choosing a fresh ID for a new decision. Without a request ID, each raise creates
+a separate gate. IDs are case-sensitive and use 1–128 ASCII letters, digits,
+dots, underscores, colons, slashes, or hyphens, starting with a letter or digit.
+
 Decision contexts and structured human feedback are typed append-only audit
 events, so the unchanged export v1 envelope carries their exact bytes and
 digests. Context can be recorded only before a ruling; omitted facts remain

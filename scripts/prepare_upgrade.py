@@ -24,18 +24,23 @@ import tempfile
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
+from types import ModuleType
 
 SCHEMA = "janus.upgrade-preparation.v1"
 PRIVATE_DIRECTORY_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
-LEDGER_TABLES = (
-    "gates",
-    "gate_options",
-    "rulings",
-    "observations",
-    "check_revisions",
-    "audit_events",
-)
+
+# Keep the same verifier throughout a rollout, including after the checkout
+# was validated and the maintenance entry took effect.
+_verifier_file = Path(__file__).resolve().with_name("verify_upgrade_ledger.py")
+_VERIFIER_SOURCE = _verifier_file.read_text(encoding="utf-8")
+_verifier = ModuleType("janus_rollout_verifier")
+exec(compile(_VERIFIER_SOURCE, str(_verifier_file), "exec"), _verifier.__dict__)
+LEDGER_TABLES = _verifier.LEDGER_TABLES
+
+
+def verifier_command(python: Path, role: str, db: Path) -> list[str]:
+    return [str(python), "-I", "-c", _VERIFIER_SOURCE, role, str(db)]
 
 
 class PreparationError(RuntimeError):
@@ -296,20 +301,7 @@ def _database_facts(connection: sqlite3.Connection) -> dict[str, object]:
             "SELECT version, checksum FROM schema_migrations ORDER BY version"
         )
     ]
-    counts = {}
-    content_sha256 = {}
-    for table in LEDGER_TABLES:
-        cursor = connection.execute(f"SELECT * FROM {table}")
-        columns = [item[0] for item in cursor.description]
-        rows = [list(row) for row in cursor.fetchall()]
-        rows.sort(key=lambda row: json.dumps(row, ensure_ascii=False, separators=(",", ":")))
-        content = json.dumps(
-            {"columns": columns, "rows": rows},
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode()
-        counts[table] = len(rows)
-        content_sha256[table] = hashlib.sha256(content).hexdigest()
+    counts, content_sha256 = _verifier.ledger_content(connection)
     return {
         "integrity_check": "ok",
         "migrations": migrations,
@@ -396,76 +388,6 @@ def _build_artifacts(
     ]
 
 
-def _verifier_code() -> str:
-    return """
-import json
-import hashlib
-import pathlib
-import sqlite3
-
-from janus import __version__, core
-
-db = pathlib.Path(__import__('sys').argv[1])
-connection = core.connect(db)
-integrity = [row[0] for row in connection.execute('PRAGMA integrity_check')]
-migrations = [dict(row) for row in connection.execute(
-    'SELECT version, checksum FROM schema_migrations ORDER BY version')]
-packaged_migrations = sorted(path.stem for path in core.MIGRATIONS_DIR.glob('*.sql'))
-counts = {table: connection.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]
-          for table in ('gates', 'gate_options', 'rulings', 'observations',
-                        'check_revisions', 'audit_events')}
-content_sha256 = {}
-for table in counts:
-    cursor = connection.execute(f'SELECT * FROM {table}')
-    columns = [item[0] for item in cursor.description]
-    rows = [list(row) for row in cursor.fetchall()]
-    rows.sort(key=lambda row: json.dumps(row, ensure_ascii=False, separators=(',', ':')))
-    content = json.dumps({'columns': columns, 'rows': rows}, ensure_ascii=False,
-                         separators=(',', ':')).encode()
-    content_sha256[table] = hashlib.sha256(content).hexdigest()
-connection.close()
-findings = core.storage_privacy_findings(db)
-print(json.dumps({'version': __version__, 'integrity': integrity,
-                  'migrations': migrations, 'packaged_migrations': packaged_migrations,
-                  'counts': counts,
-                  'content_sha256': content_sha256,
-                  'storage_findings': findings}, sort_keys=True))
-"""
-
-
-def _rollback_verifier_code() -> str:
-    return """
-import json
-import hashlib
-import pathlib
-from janus import __version__, core
-
-db = pathlib.Path(__import__('sys').argv[1])
-connection = core.connect(db)
-integrity = [row[0] for row in connection.execute('PRAGMA integrity_check')]
-migrations = [row['version'] for row in connection.execute(
-    'SELECT version FROM schema_migrations ORDER BY version')]
-packaged_migrations = sorted(path.stem for path in core.MIGRATIONS_DIR.glob('*.sql'))
-counts = {table: connection.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]
-          for table in ('gates', 'gate_options', 'rulings', 'observations',
-                        'check_revisions', 'audit_events')}
-content_sha256 = {}
-for table in counts:
-    cursor = connection.execute(f'SELECT * FROM {table}')
-    columns = [item[0] for item in cursor.description]
-    rows = [list(row) for row in cursor.fetchall()]
-    rows.sort(key=lambda row: json.dumps(row, ensure_ascii=False, separators=(',', ':')))
-    content = json.dumps({'columns': columns, 'rows': rows}, ensure_ascii=False,
-                         separators=(',', ':')).encode()
-    content_sha256[table] = hashlib.sha256(content).hexdigest()
-connection.close()
-print(json.dumps({'version': __version__, 'integrity': integrity,
-                  'migrations': migrations, 'packaged_migrations': packaged_migrations,
-                  'counts': counts,
-                  'content_sha256': content_sha256}, sort_keys=True))
-"""
-
-
 def _json_result(completed: subprocess.CompletedProcess[str], label: str) -> dict:
     try:
         return json.loads(completed.stdout)
@@ -478,8 +400,7 @@ def _installed_verification(
     environment: Path,
     rehearsal_db: Path,
     work: Path,
-    code: str,
-    label: str,
+    role: str,
 ) -> dict:
     _run([sys.executable, "-m", "venv", str(environment)], cwd=work, isolated_python=True)
     scripts = environment / ("Scripts" if os.name == "nt" else "bin")
@@ -493,12 +414,12 @@ def _installed_verification(
     )
     return _json_result(
         _run(
-            [str(python), "-c", code, str(rehearsal_db)],
+            verifier_command(python, role, rehearsal_db),
             cwd=work,
             capture=True,
             isolated_python=True,
         ),
-        label,
+        f"{role} verifier",
     )
 
 
@@ -522,8 +443,7 @@ def _rehearse(
         rehearsal / "candidate-venv",
         rehearsal_db,
         work=rehearsal,
-        code=_verifier_code(),
-        label="candidate verifier",
+        role="candidate",
     )
     if candidate["integrity"] != ["ok"] or candidate["storage_findings"]:
         raise PreparationError(f"candidate rehearsal failed: {candidate!r}")
@@ -533,8 +453,7 @@ def _rehearse(
         rehearsal / "rollback-venv",
         rehearsal_db,
         work=rehearsal,
-        code=_rollback_verifier_code(),
-        label="rollback verifier",
+        role="rollback",
     )
     if (
         rollback["integrity"] != ["ok"]

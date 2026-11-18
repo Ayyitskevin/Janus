@@ -21,13 +21,14 @@ from jsonschema.exceptions import ValidationError
 PROJECT = Path(__file__).resolve().parents[1]
 SCRIPT = PROJECT / "scripts" / "prepare_upgrade.py"
 
+sys.path.insert(0, str(PROJECT / "scripts"))
 sys.path.insert(0, str(PROJECT / "src"))
 
 from janus import core  # noqa: E402
 
 
-def _load_script():
-    spec = importlib.util.spec_from_file_location("janus_prepare_upgrade", SCRIPT)
+def _load_script(path=SCRIPT):
+    spec = importlib.util.spec_from_file_location("janus_prepare_upgrade", path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -123,16 +124,16 @@ def _committed_copy(root: Path) -> tuple[Path, str, str]:
     _run("git", "config", "user.name", "Janus test", cwd=repo)
     _run("git", "config", "user.email", "janus-test@example.invalid", cwd=repo)
     newest_migration = (
-        repo / "src" / "janus" / "migrations" / "0005_shadow_predictions.sql"
+        repo / "src" / "janus" / "migrations" / "0006_raise_request_id.sql"
     )
     newest_migration_bytes = newest_migration.read_bytes()
     newest_migration.unlink()
     _run("git", "add", ".", cwd=repo)
-    _run("git", "commit", "-qm", "rollback without migration 0005", cwd=repo)
+    _run("git", "commit", "-qm", "rollback without migration 0006", cwd=repo)
     rollback = _run("git", "rev-parse", "HEAD", cwd=repo).stdout.strip()
     newest_migration.write_bytes(newest_migration_bytes)
     _run("git", "add", str(newest_migration.relative_to(repo)), cwd=repo)
-    _run("git", "commit", "-qm", "candidate adds migration 0005", cwd=repo)
+    _run("git", "commit", "-qm", "candidate adds migration 0006", cwd=repo)
     candidate = _run("git", "rev-parse", "HEAD", cwd=repo).stdout.strip()
     return repo, rollback, candidate
 
@@ -195,6 +196,32 @@ def test_content_digest_detects_same_count_ledger_rewrite(tmp_path):
     connection.close()
 
 
+def test_installed_verifiers_keep_driver_startup_source_after_checkout_changes(tmp_path):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    driver_path = scripts / SCRIPT.name
+    shutil.copyfile(SCRIPT, driver_path)
+    verifier = scripts / "verify_upgrade_ledger.py"
+    shutil.copyfile(SCRIPT.with_name(verifier.name), verifier)
+    driver = _load_script(driver_path)
+    verifier.write_text("raise RuntimeError('late verifier source was loaded')")
+
+    db, _, _ = _legacy_ledger(tmp_path)
+    connection = core.connect(db)
+    try:
+        core.raise_gate(connection, question="Print a second map?", kind="taste",
+                        consumer="print desk", decay="window closes", actor="tester",
+                        request_id="map.2")
+        expected = driver._database_facts(connection)
+    finally:
+        connection.close()
+    for role in ("candidate", "rollback"):
+        result = _run(*driver.verifier_command(Path(sys.executable), role, db), cwd=tmp_path)
+        observed = json.loads(result.stdout)
+        assert observed["counts"] == expected["counts"]
+        assert observed["content_sha256"] == expected["content_sha256"]
+
+
 def test_end_to_end_bundle_is_private_exact_and_non_deploying(tmp_path):
     repo, rollback, commit = _committed_copy(tmp_path)
     db, _, _ = _legacy_ledger(tmp_path)
@@ -240,6 +267,7 @@ def test_end_to_end_bundle_is_private_exact_and_non_deploying(tmp_path):
         "0003_bound_rulings_require_digest",
         "0004_decision_learning_events",
         "0005_shadow_predictions",
+        "0006_raise_request_id",
     ]
     assert manifest["rehearsal"]["candidate"]["packaged_migrations"] == [
         "0001_initial",
@@ -247,12 +275,14 @@ def test_end_to_end_bundle_is_private_exact_and_non_deploying(tmp_path):
         "0003_bound_rulings_require_digest",
         "0004_decision_learning_events",
         "0005_shadow_predictions",
+        "0006_raise_request_id",
     ]
     assert manifest["rehearsal"]["rollback"]["packaged_migrations"] == [
         "0001_initial",
         "0002_check_revisions",
         "0003_bound_rulings_require_digest",
         "0004_decision_learning_events",
+        "0005_shadow_predictions",
     ]
     assert "confidential incident" not in (output / "manifest.json").read_text()
     assert _sha256(db) == live_hash

@@ -69,6 +69,10 @@ cleanup failure is reported rather than hidden.
 - SQLite reported `integrity_check=ok` for the backup and rehearsal copy.
 - Candidate migration preserved all earlier migration version/checksum pairs
   plus the row counts and canonical content digest of every ledger table.
+  Migration 0006 adds a private request-to-gate mapping. An empty mapping
+  preserves the legacy gates digest. Once a keyed gate exists, the gates
+  digest covers all gate columns and rows plus every `[request_id, gate_id]`
+  pair in binary request ID order.
 - The rollback wheel opened the migrated copy and observed the same counts and
   content digests. Its separately reported packaged-migration list makes
   candidate-wheel reuse visible even when both packages share a version string.
