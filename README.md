@@ -86,7 +86,7 @@ janus verify-export decision.json --expect-gate "$gate_id" \
 ```
 
 Use the export's `integrity.document_sha256` from the trusted source. Reformatting
-the JSON changes the file bytes but preserves that digest. With neither flag,
+the JSON changes the file bytes but preserves that digest. With no expectations,
 success means the file passed its internal format and integrity checks. With
 both flags, the receipt identifies the exact decision and version the conductor
 sent. It includes the recorded state, consumer, selected option and
@@ -94,6 +94,25 @@ binding-evidence status. A complete-ledger export gives a count and digest and
 cannot satisfy `--expect-gate`. A failed verification exits 2 with a diagnostic
 on stderr and no receipt. The reviewer still checks current proposal bytes,
 delivery evidence and their own authority before acting.
+
+For a file-bound human ruling, the consumer can also check a local copy of the
+proposal, even after a rename. Hash the proposed file directly and use the gate
+and document digest from the trusted handoff.
+
+```bash
+(
+  checksum=$(sha256sum < "$proposal") || exit 1
+  janus verify-export decision.json --expect-gate "$gate_id" \
+    --expect-document-sha256 "$document_sha256" \
+    --expect-bound-file-sha256 "${checksum%% *}" --json
+)
+```
+
+On a match, `matched_bound_file_sha256` identifies the bytes measured when
+the human ruled. These can differ from the bytes present when the gate was
+raised. Check the receipt's state as well. A matching file can carry a
+`refused` ruling. A different file digest or a decision without a recorded
+file digest exits 2. Janus reads only the supplied export during verification.
 
 The diagnostic shape is also available where an agent most needs it: `raise`, `decide`,
 `withdraw`, `expire`, and `supersede` accept `--json` and print the gate as one object on

@@ -302,6 +302,8 @@ def _human_export_receipt(receipt: dict) -> str:
             lines.append(f"Selected option: {ascii(option['id'])} {ascii(option['label'])}")
         if decision["binding_evidence"] is not None:
             lines.append(f"Binding evidence: {decision['binding_evidence']}")
+    if "matched_bound_file_sha256" in receipt:
+        lines.append(f"Matched ruling-time file SHA-256: {receipt['matched_bound_file_sha256']}")
     return "\n".join(lines)
 
 
@@ -321,9 +323,13 @@ def _read_export_stdin() -> bytes:
 def cmd_verify_export(a) -> int:
     """Verify a transported artifact without opening a ledger."""
     try:
+        file_digests = a.expect_bound_file_sha256 or []
+        if len(file_digests) > 1:
+            raise JanusError("supply --expect-bound-file-sha256 only once")
         raw = _read_export_stdin() if a.file == "-" else Path(a.file).read_bytes()
         receipt = stable_export.verify_export_receipt(
             raw, expect_gate=a.expect_gate, expect_document_sha256=a.expect_document_sha256,
+            expect_bound_file_sha256=file_digests[0] if file_digests else None,
         )
         if a.json:
             text = json.dumps(receipt, separators=(",", ":"))
@@ -1263,6 +1269,8 @@ def build_parser() -> argparse.ArgumentParser:
     ve.add_argument("--expect-gate", metavar="ID", help="require this exact gate selection")
     ve.add_argument("--expect-document-sha256", metavar="HEX",
                     help="require this canonical document SHA-256 from a trusted handoff")
+    ve.add_argument("--expect-bound-file-sha256", metavar="HEX", action="append",
+                    help="compare a file SHA-256 you measured with the ruling-time digest")
     ve.add_argument("--json", action="store_true", help="emit the verified receipt as JSON")
     ve.set_defaults(fn=cmd_verify_export)
 

@@ -12,12 +12,15 @@ from pathlib import Path
 import pytest
 
 from janus import cli, core
-from janus.export import canonical_json
+from janus.export import canonical_json, verify_export, verify_export_receipt
 
 GOLDEN = Path(__file__).parent / "fixtures" / "export-v1.golden.json"
 GATE = "g00000000001"
 OTHER_GATE = "g00000000002"
 PIN = "e5bd4cad7ee4938bd0e89df23163ec9e16da479ffe046461d6efdd394f091caf"
+BOUND_FILE = "--expect-bound-file-sha256"
+RAISED_SHA = "1" * 64
+RULED_SHA = "2" * 64
 
 
 def _rehash(envelope, *, records=True):
@@ -75,13 +78,72 @@ def test_golden_point_receipt_and_independent_pins(verify):
     for flags in ([], ["--expect-gate", GATE], ["--expect-document-sha256", PIN]):
         rc, output = verify(str(GOLDEN), "--json", *flags)
         assert rc == 0 and json.loads(output) == expected
-        assert len(output.splitlines()) == 1
+        assert output == json.dumps(expected, separators=(",", ":")) + "\n"
+
+    rc, output = verify(str(GOLDEN))
+    assert rc == 0 and output == (
+        f"Verified selection: {GATE}\nRecords: 1\nDocument SHA-256: {PIN}\n"
+        "Question: 'Ship the example candidate?'\nState: approved\n"
+        "Consumer: 'example: independently re-verify before acting'\n"
+        "Selected option: 'ship' 'Ship'\nBinding evidence: recorded\n"
+    )
 
     # Different transport bytes still describe the identical canonical document.
     reformatted = json.dumps(json.loads(GOLDEN.read_bytes()), indent=4, sort_keys=True).encode()
     rc, output = verify("--json", "--expect-gate", GATE, "--expect-document-sha256", PIN,
                         raw=reformatted)
     assert rc == 0 and json.loads(output) == expected
+
+
+def test_bound_file_pin_matches_only_ruling_time_file_evidence(verify):
+    raw = GOLDEN.read_bytes()
+    expected = {**verify_export_receipt(raw), "matched_bound_file_sha256": RULED_SHA}
+    for pins in ((), ("--expect-gate", GATE), ("--expect-document-sha256", PIN),
+                 ("--expect-gate", GATE, "--expect-document-sha256", PIN)):
+        rc, output = verify(str(GOLDEN), "--json", BOUND_FILE, RULED_SHA, *pins)
+        assert rc == 0 and json.loads(output) == expected
+    rc, output = verify(BOUND_FILE, RULED_SHA, raw=raw)
+    assert rc == 0 and any(RULED_SHA in line and "rul" in line.lower() and "file" in line.lower()
+                           for line in output.splitlines())
+    for wrong in (RAISED_SHA, PIN):
+        with pytest.raises(core.JanusError, match=r"(?i)match|differ"):
+            verify_export_receipt(raw, expect_bound_file_sha256=wrong)
+    rc, error = verify(str(GOLDEN), BOUND_FILE, RAISED_SHA)
+    assert rc == 2 and "ruling-time file digest does not match" in error
+
+
+def test_matching_file_preserves_refusal(verify):
+    artifact = json.loads(GOLDEN.read_bytes())
+    record = artifact["document"]["records"][0]["record"]
+    event = record["terminal_event"]
+    record["state"] = event["state"] = "refused"
+    event["option_id"] = None
+    raw = _rehash(artifact)
+    expected = verify_export_receipt(raw)
+    assert expected["decision"]["state"] == "refused"
+    assert expected["decision"]["selected_option"] is None
+    expected["matched_bound_file_sha256"] = RULED_SHA
+    assert verify_export_receipt(raw, expect_bound_file_sha256=RULED_SHA) == expected
+    rc, output = verify(BOUND_FILE, RULED_SHA, "--json", raw=raw)
+    assert rc == 0 and json.loads(output) == expected
+
+
+def _assert_no_file_comparison(verify, raw, reason="no recorded ruling-time file digest"):
+    verify_export(raw)  # This is a valid v1 export, including its record integrity.
+    rc, error = verify(BOUND_FILE, RULED_SHA, raw=raw)
+    assert rc == 2 and reason in error
+
+
+@pytest.mark.parametrize("kind", ["git", "text", None])
+def test_bound_file_pin_requires_file_binding(verify, kind):
+    artifact = json.loads(GOLDEN.read_bytes())
+    record = artifact["document"]["records"][0]["record"]
+    if kind is None:
+        record["binding"] = None
+        record["terminal_event"]["binding_evidence"] = {"status": "not_applicable", "sha256": None}
+    else:
+        record["binding"]["kind"] = kind  # Byte-for-byte equal recorded digest.
+    _assert_no_file_comparison(verify, _rehash(artifact))
 
 
 def test_receipt_uses_actual_selection_and_quotes_untrusted_text(verify):
@@ -118,6 +180,7 @@ def test_complete_ledger_has_no_single_gate_decision(verify, count):
     }
     rc, error = verify("--expect-gate", GATE, raw=raw)
     assert rc == 2 and ("gate" in error.lower() or "selection" in error.lower())
+    _assert_no_file_comparison(verify, raw, reason="requires one gate")
 
 
 @pytest.mark.parametrize("state,status", [
@@ -134,21 +197,23 @@ def test_no_selection_or_binding_evidence_is_inferred(verify, state, status):
         event["binding_evidence"] = {"status": status, "sha256": None}
         if state == "superseded":
             event.update(state=state, type="non_ruling_closure", option_id=None)
-    rc, output = verify("--json", raw=_rehash(artifact))
+    raw = _rehash(artifact)
+    rc, output = verify("--json", raw=raw)
     assert rc == 0
     decision = json.loads(output)["decision"]
     assert decision["binding_evidence"] == status and decision["state"] == state
     if state != "approved":
         assert decision["selected_option"] is None
+    _assert_no_file_comparison(verify, raw)
 
 
 def test_wrong_gate_same_gate_different_digest_and_tampering(verify):
-    flags = ["--expect-gate", GATE, "--expect-document-sha256", PIN, "--json"]
+    flags = ["--expect-gate", GATE, "--expect-document-sha256", PIN, BOUND_FILE, "bad", "--json"]
     artifact = json.loads(GOLDEN.read_bytes())
     record = artifact["document"]["records"][0]["record"]
     record["consumer"] = "new recipient"
     rc, error = verify(*flags, raw=_rehash(artifact))
-    assert rc == 2 and ("digest" in error.lower() or "sha256" in error.lower())
+    assert rc == 2 and "document digest does not match expected" in error
 
     record["id"] = artifact["document"]["selection"]["gate_id"] = OTHER_GATE
     rc, wrong_gate = verify(*flags, raw=_rehash(artifact))
@@ -187,6 +252,16 @@ def test_missing_file_and_malformed_expectations_fail_cleanly(verify, tmp_path):
     for flag, value in (("--expect-gate", "no-gate"), ("--expect-document-sha256", PIN.upper())):
         rc, _ = verify(str(GOLDEN), flag, value, "--json")
         assert rc == 2
+
+
+def test_bound_file_pin_requires_exact_lowercase_ascii_hex_once(verify):
+    for value in (RULED_SHA[:-1], RULED_SHA + "0", "A" * 64, "g" * 64, "２" * 64,
+                  RULED_SHA + "\n", "\x1b[2J"):
+        rc, error = verify(str(GOLDEN), BOUND_FILE, value, "--json")
+        assert rc == 2 and "\x1b" not in error and len(error.splitlines()) == 1
+        assert "lowercase" in error.lower()
+    rc, error = verify(str(GOLDEN), BOUND_FILE, RULED_SHA, BOUND_FILE, RULED_SHA)
+    assert rc == 2 and BOUND_FILE in error
 
 
 def test_input_is_required_even_when_stdin_contains_an_export(capsys, monkeypatch):
