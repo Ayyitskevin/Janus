@@ -151,6 +151,37 @@ def test_refuses_final_links_directories_and_fifo(ledger, export, tmp_path):
     assert target.read_bytes() == b"untouched" and not dangling.exists()
 
 
+@pytest.mark.parametrize("suffix", ["", "-WAL", "-SHM", "-JOURNAL"])
+def test_reserved_names_include_case_and_unicode_variants(tmp_path, export, monkeypatch, suffix):
+    ledger = tmp_path / "Café.db"
+    with closing(core.connect(ledger)):
+        pass
+    equivalent = "CAFE\u0301.DB" + suffix
+    monkeypatch.setattr(sqlite3, "connect", lambda *_a, **_kw: pytest.fail("snapshot opened"))
+    error = export("--output", tmp_path / equivalent, db=ledger, status=2)
+    assert b"source ledger or sidecar" in error
+
+
+def test_directory_close_after_commit_preserves_success(ledger, tmp_path, export, monkeypatch):
+    db, _ = ledger
+    expected = export(db=db)
+    destination = tmp_path / "decision"
+    real_close = os.close
+    directory_info = tmp_path.stat()
+    closed = []
+
+    def close(fd):
+        is_directory = os.path.samestat(os.fstat(fd), directory_info)
+        real_close(fd)
+        if is_directory:
+            closed.append(fd)
+            raise OSError("injected directory cleanup error")
+
+    monkeypatch.setattr(os, "close", close)
+    assert export("--output", destination, db=db) == b""
+    assert closed and destination.read_bytes() == expected
+
+
 @pytest.mark.parametrize("mode,status", [(0o775, 2), (0o777, 2), (0o1777, 0), (0o755, 0)])
 def test_output_directory_chain_protects_child_entries(ledger, export, tmp_path, mode, status):
     db, _ = ledger

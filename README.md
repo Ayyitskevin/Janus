@@ -166,7 +166,8 @@ a different decision or an older version.
 Choose an existing output directory where another OS user cannot replace
 your files. Janus checks directory ownership and permissions and refuses
 non-sticky group- or world-writable parents. An existing destination must be
-a regular file. The source ledger and its SQLite sidecar names are reserved.
+a regular file. The source ledger and its SQLite sidecar names are reserved,
+including case and Unicode-normalization variants in the same directory.
 To stream the same JSON and trailing newline, omit `--output` or use
 `--output -`.
 

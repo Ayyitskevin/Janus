@@ -17,6 +17,7 @@ import stat
 import statistics
 import subprocess
 import sys
+import unicodedata
 from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
@@ -269,8 +270,15 @@ def cmd_show(a, conn) -> int:
     return 0
 
 
+def _filename_key(name: str) -> str:
+    return unicodedata.normalize("NFD", name).casefold()
+
+
 def _check_export_target(directory: int, name: str, ledger: Path) -> None:
-    if name in {ledger.name + suffix for suffix in ("", "-wal", "-shm", "-journal")}:
+    # The filesystem can fold case or Unicode even when a sidecar is absent.
+    suffixes = ("", "-wal", "-shm", "-journal")
+    ledger_key = _filename_key(ledger.name)
+    if _filename_key(name) in {ledger_key + suffix for suffix in suffixes}:
         try:
             ledger_directory = ledger.parent.stat()
         except FileNotFoundError:
@@ -284,11 +292,18 @@ def _check_export_target(directory: int, name: str, ledger: Path) -> None:
         return
     if not stat.S_ISREG(target.st_mode):
         raise JanusError("cannot export: existing output must be a regular file")
+    for suffix in suffixes:
+        try:
+            member = Path(f"{ledger}{suffix}").lstat()
+        except FileNotFoundError:
+            continue
+        if os.path.samestat(target, member):
+            raise JanusError("cannot export: output is a hard link or alias to ledger storage")
 
 
 def _publish_export(directory: int, name: str, artifact: bytes, ledger: Path) -> None:
     temporary = f".janus-export-{secrets.token_hex(16)}"
-    if temporary == name:
+    if temporary == _filename_key(name):
         temporary += ".tmp"
     fd = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600, dir_fd=directory)
     try:
@@ -325,7 +340,10 @@ def _export_to_file(
         artifact = stable_export.export_gates(ledger, gate, request_id=request)
         _publish_export(directory, name, artifact, ledger)
     finally:
-        os.close(directory)
+        # The rename is the commit point. Closing a read-only directory cannot
+        # undo it or turn a committed delivery into a failed publication.
+        with suppress(OSError):
+            os.close(directory)
 
 
 def cmd_export(a, _conn=None) -> int:
