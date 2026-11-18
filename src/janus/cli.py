@@ -270,25 +270,30 @@ def cmd_show(a, conn) -> int:
     return 0
 
 
-def _filename_key(name: str) -> str:
-    return unicodedata.normalize("NFD", name).casefold()
-
-
 def _check_export_target(directory: int, name: str, ledger: Path) -> None:
-    # The filesystem can fold case or Unicode even when a sidecar is absent.
     suffixes = ("", "-wal", "-shm", "-journal")
-    ledger_key = _filename_key(ledger.name)
-    if _filename_key(name) in {ledger_key + suffix for suffix in suffixes}:
-        try:
-            ledger_directory = ledger.parent.stat()
-        except FileNotFoundError:
-            pass  # The snapshot will report the missing ledger.
-        else:
-            if os.path.samestat(ledger_directory, os.fstat(directory)):
-                raise JanusError("cannot export: output would replace the source ledger or sidecar")
     try:
         target = os.stat(name, dir_fd=directory, follow_symlinks=False)
     except FileNotFoundError:
+        target = None
+    try:
+        ledger_directory = ledger.parent.stat()
+    except FileNotFoundError:
+        ledger_directory = None  # The snapshot will report the missing ledger.
+    if ledger_directory is not None and os.path.samestat(ledger_directory, os.fstat(directory)):
+        folded = unicodedata.normalize("NFD", name).casefold()
+        ledger_key = unicodedata.normalize("NFD", ledger.name).casefold()
+        if folded in {ledger_key + suffix for suffix in suffixes}:
+            raise JanusError("cannot export: output would replace the source ledger or sidecar")
+        if target is None and not (name.isascii() and ledger.name.isascii()):
+            # Filesystems can ignore additional characters. A literal .json
+            # suffix cannot match any SQLite sidecar, even before it exists.
+            if not name.endswith(".json"):
+                raise JanusError(
+                    "cannot export: for a new name beside a ledger with non-ASCII spellings, "
+                    "use a .json suffix or a separate output directory"
+                )
+    if target is None:
         return
     if not stat.S_ISREG(target.st_mode):
         raise JanusError("cannot export: existing output must be a regular file")
@@ -302,9 +307,10 @@ def _check_export_target(directory: int, name: str, ledger: Path) -> None:
 
 
 def _publish_export(directory: int, name: str, artifact: bytes, ledger: Path) -> None:
-    temporary = f".janus-export-{secrets.token_hex(16)}"
-    if temporary == _filename_key(name):
-        temporary += ".tmp"
+    # An ASCII hyphen survives case folding and normalization. Opposite
+    # hyphen presence keeps the stage distinct even on folding filesystems.
+    prefix = ".janusexport" if "-" in name else ".janus-export-"
+    temporary = prefix + secrets.token_hex(16)
     fd = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600, dir_fd=directory)
     try:
         with os.fdopen(fd, "wb") as stream:

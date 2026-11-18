@@ -182,6 +182,37 @@ def test_directory_close_after_commit_preserves_success(ledger, tmp_path, export
     assert closed and destination.read_bytes() == expected
 
 
+def test_missing_unicode_neighbor_is_unambiguous_or_in_separate_directory(ledger, export, tmp_path):
+    db, _ = ledger
+    expected = export(db=db)
+    # Some filesystems ignore a soft hyphen when looking up a missing sidecar.
+    ambiguous = "ja\u00adnus.db-wal"
+    assert b".json suffix" in export("--output", db.parent / ambiguous, db=db, status=2)
+    assert not (db.parent / ambiguous).exists()
+    for destination in (db.parent / "résultat.json", tmp_path / ambiguous):
+        assert export("--output", destination, db=db) == b""
+        assert destination.read_bytes() == expected
+
+
+@pytest.mark.parametrize("destination", [".JANUS-EXPORT-deadbeef", ".janus\u00adexportdeadbeef"])
+def test_staging_name_remains_distinct_until_commit(ledger, tmp_path, export, monkeypatch,
+                                                    destination):
+    db, _ = ledger
+    monkeypatch.setattr(cli.secrets, "token_hex", lambda _: "deadbeef")
+    real_replace = os.replace
+    commits = []
+
+    def observe(source, target, **kwargs):
+        assert ("-" in source) != ("-" in target)
+        assert not (tmp_path / target).exists()
+        commits.append(target)
+        return real_replace(source, target, **kwargs)
+
+    monkeypatch.setattr(os, "replace", observe)
+    assert export("--output", tmp_path / destination, db=db) == b""
+    assert commits == [destination]
+
+
 @pytest.mark.parametrize("mode,status", [(0o775, 2), (0o777, 2), (0o1777, 0), (0o755, 0)])
 def test_output_directory_chain_protects_child_entries(ledger, export, tmp_path, mode, status):
     db, _ = ledger

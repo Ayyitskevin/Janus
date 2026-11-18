@@ -168,6 +168,9 @@ your files. Janus checks directory ownership and permissions and refuses
 non-sticky group- or world-writable parents. An existing destination must be
 a regular file. The source ledger and its SQLite sidecar names are reserved,
 including case and Unicode-normalization variants in the same directory.
+When the ledger or destination name contains non-ASCII characters, use a
+literal `.json` suffix for a new file beside the ledger, or publish in a
+separate directory. Filesystems differ in how they match absent sidecar names.
 To stream the same JSON and trailing newline, omit `--output` or use
 `--output -`.
 
