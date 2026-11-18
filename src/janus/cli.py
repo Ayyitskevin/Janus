@@ -437,15 +437,33 @@ def _read_export_stdin() -> bytes:
         data.write(chunk)
 
 
+def _read_trusted_receipt(filename: str) -> tuple[str, str]:
+    if filename == "-":
+        raise JanusError("--trusted-receipt requires a named receipt file")
+    # Open once so both pins come from one snapshot even during an atomic replacement.
+    # Nonblocking open lets us reject a FIFO without waiting for a writer.
+    with open(filename, "rb", opener=lambda p, flags: os.open(p, flags | os.O_NONBLOCK)) as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise JanusError("--trusted-receipt requires a regular file")
+        return stable_export.publication_receipt_pins(stream.read())
+
+
 def cmd_verify_export(a) -> int:
     """Verify a transported artifact without opening a ledger."""
     try:
         file_digests = a.expect_bound_file_sha256 or []
         if len(file_digests) > 1:
             raise JanusError("supply --expect-bound-file-sha256 only once")
+        gate, digest = a.expect_gate, a.expect_document_sha256
+        if a.trusted_receipt:
+            if len(a.trusted_receipt) != 1:
+                raise JanusError("supply --trusted-receipt only once")
+            if gate is not None or digest is not None:
+                raise JanusError("--trusted-receipt already supplies the gate and document digest")
+            gate, digest = _read_trusted_receipt(a.trusted_receipt[0])
         raw = _read_export_stdin() if a.file == "-" else Path(a.file).read_bytes()
         receipt = stable_export.verify_export_receipt(
-            raw, expect_gate=a.expect_gate, expect_document_sha256=a.expect_document_sha256,
+            raw, expect_gate=gate, expect_document_sha256=digest,
             expect_bound_file_sha256=file_digests[0] if file_digests else None,
         )
         if a.json:
@@ -1391,6 +1409,9 @@ def build_parser() -> argparse.ArgumentParser:
     ve.add_argument("--expect-gate", metavar="ID", help="require this exact gate selection")
     ve.add_argument("--expect-document-sha256", metavar="HEX",
                     help="require this canonical document SHA-256 from a trusted handoff")
+    ve.add_argument("--trusted-receipt", metavar="FILE", action="append",
+                    help="read both expectations from the issuer's separately trusted "
+                         "export --receipt-json file")
     ve.add_argument("--expect-bound-file-sha256", metavar="HEX", action="append",
                     help="compare a file SHA-256 you measured with the ruling-time digest")
     ve.add_argument("--json", action="store_true", help="emit the verified receipt as JSON")

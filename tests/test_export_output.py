@@ -97,6 +97,29 @@ def test_producer_receipt_selectors_share_v1_bytes_and_pins(ledger, export, tmp_
         assert verified["decision"]["state"] == "open"
 
 
+def test_trusted_receipt_selects_current_version_offline(ledger, export, tmp_path, capfdbinary):
+    db, gate = ledger
+    earlier = tmp_path / "first-decision.json"
+    current = tmp_path / "second-decision.json"
+    receipt = tmp_path / "registrar" / "receipt.json"
+    receipt.parent.mkdir()
+    export(gate, "--output", earlier, db=db)
+    with closing(core.connect(db)) as conn:
+        core.close_gate(conn, gate, state="refused", reason="Hold delivery.", actor="owner")
+    receipt.write_bytes(export(gate, "--output", current, "--receipt-json", db=db))
+    delivered = current.rename(tmp_path / "renamed.json")
+
+    unused_db = tmp_path / "offline" / "ledger.db"
+    verify = ["--db", str(unused_db), "verify-export", "--trusted-receipt", str(receipt), "--json"]
+    assert cli.main([*verify, str(earlier)]) == 2
+    out, err = capfdbinary.readouterr()
+    assert not out and b"digest" in err
+    assert cli.main([*verify, str(delivered)]) == 0
+    out, err = capfdbinary.readouterr()
+    assert not err and json.loads(out)["decision"]["state"] == "refused"
+    assert not unused_db.parent.exists()
+
+
 def test_receipt_argument_or_lookup_failure_preserves_prior_file(ledger, export, tmp_path):
     db, gate = ledger
     delivery = tmp_path / "decision"

@@ -95,6 +95,62 @@ def test_golden_point_receipt_and_independent_pins(verify):
     assert rc == 0 and json.loads(output) == expected
 
 
+def test_trusted_receipt_matches_explicit_pins_with_optional_bound_digest(verify, tmp_path):
+    receipt = tmp_path / "receipt.json"
+    # The consumer accepts a valid JSON object independent of whitespace or field order.
+    receipt.write_text(json.dumps({"document_sha256": PIN, "gate_id": GATE}, indent=2))
+    raw = GOLDEN.read_bytes()
+    for mode in ([], ["--json"]):
+        explicit = verify("--expect-gate", GATE, "--expect-document-sha256", PIN,
+                          BOUND_FILE, RULED_SHA, *mode, raw=raw)
+        assert explicit[0] == 0
+        assert verify("--trusted-receipt", str(receipt), BOUND_FILE, RULED_SHA,
+                      *mode, raw=raw) == explicit
+    assert verify(str(GOLDEN), "--trusted-receipt", str(receipt), BOUND_FILE, RAISED_SHA)[0] == 2
+    receipt.write_text(json.dumps({"document_sha256": PIN, "gate_id": OTHER_GATE}))
+    assert verify(str(GOLDEN), "--trusted-receipt", str(receipt))[0] == 2
+
+
+@pytest.mark.parametrize("payload", [
+    b'{"gate_id":',
+    b"\xff",
+    json.dumps({"gate_id": GATE, "document_sha256": PIN}).encode("utf-16"),
+    b"[]",
+    json.dumps({"gate_id": GATE}).encode(),
+    json.dumps({"gate_id": None, "document_sha256": PIN}).encode(),
+    json.dumps({"gate_id": GATE, "document_sha256": None}).encode(),
+    json.dumps({"gate_id": GATE, "document_sha256": PIN, "extra\x1b[2J": "x"}).encode(),
+    f'{{"gate_id":"{GATE}","gate_id":"{GATE}","document_sha256":"{PIN}"}}'.encode(),
+    json.dumps({"gate_id": GATE, "document_sha256": PIN.upper()}).encode(),
+])
+def test_invalid_trusted_receipt_fails_before_reading_decision(verify, tmp_path, monkeypatch,
+                                                               payload):
+    receipt = tmp_path / "receipt.json"
+    receipt.write_bytes(payload)
+    monkeypatch.setattr(cli, "_read_export_stdin", lambda: pytest.fail("read delivery too soon"))
+    rc, err = verify("-", "--trusted-receipt", str(receipt), "--json")
+    assert rc == 2 and len(err.splitlines()) == 1 and "\x1b" not in err
+
+
+def test_trusted_receipt_requires_one_unambiguous_file(verify, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    Path("-").write_text(json.dumps({"gate_id": GATE, "document_sha256": PIN}))
+    assert verify(str(GOLDEN), "--trusted-receipt", "./-")[0] == 0
+    monkeypatch.setattr(cli, "_read_export_stdin", lambda: pytest.fail("read delivery too soon"))
+    for value in ("-", ".", "no-receipt\x1b[2J"):
+        rc, err = verify("-", "--trusted-receipt", value)
+        assert rc == 2 and len(err.splitlines()) == 1 and "\x1b" not in err
+    for extra in (["--trusted-receipt", "./-"], ["--expect-gate", GATE],
+                  ["--expect-document-sha256", PIN]):
+        assert verify("-", "--trusted-receipt", "./-", *extra)[0] == 2
+
+
+def test_trusted_receipt_fifo_without_a_writer_fails_promptly(tmp_path):
+    fifo = tmp_path / "receipt.fifo"
+    os.mkfifo(fifo)
+    _assert_stream_refusal([str(GOLDEN), "--trusted-receipt", str(fifo)])
+
+
 def test_bound_file_pin_matches_only_ruling_time_file_evidence(verify):
     raw = GOLDEN.read_bytes()
     expected = {**verify_export_receipt(raw), "matched_bound_file_sha256": RULED_SHA}
