@@ -111,6 +111,31 @@ def test_trusted_receipt_matches_explicit_pins_with_optional_bound_digest(verify
     assert verify(str(GOLDEN), "--trusted-receipt", str(receipt))[0] == 2
 
 
+def test_trusted_receipt_uses_one_snapshot_during_atomic_replacement(verify, tmp_path, monkeypatch):
+    receipt = tmp_path / "receipt.json"
+    replacement = tmp_path / "next.json"
+    receipt.write_text(json.dumps({"gate_id": GATE, "document_sha256": PIN}))
+    replacement.write_text(json.dumps({"gate_id": GATE, "document_sha256": "0" * 64}))
+    open_file = os.open
+    open_count = 0
+
+    def open_then_rotate(path, flags, *args, **kwargs):
+        nonlocal open_count
+        fd = open_file(path, flags, *args, **kwargs)
+        if Path(path) == receipt:
+            open_count += 1
+            if open_count == 1:
+                replacement.replace(receipt)
+        return fd
+
+    monkeypatch.setattr(os, "open", open_then_rotate)
+    args = (str(GOLDEN), "--trusted-receipt", str(receipt))
+    assert verify(*args)[0] == 0
+    assert open_count == 1
+    assert verify(*args)[0] == 2
+    assert open_count == 2
+
+
 @pytest.mark.parametrize("payload", [
     b'{"gate_id":',
     b"\xff",
