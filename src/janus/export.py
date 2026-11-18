@@ -794,6 +794,21 @@ def verify_export(raw: bytes | str) -> dict[str, Any]:
     return _verified_envelope(raw)["document"]
 
 
+def publication_receipt_pins(raw: bytes) -> tuple[str, str]:
+    """Read the two independent expectations from an export --receipt-json record."""
+    try:
+        pins = json.loads(raw.decode("utf-8"), object_pairs_hook=_reject_duplicate_keys)
+    except (ValueError, RecursionError) as exc:
+        raise JanusError("cannot verify export: trusted receipt must be valid UTF-8 JSON") from exc
+    pins = _exact_object(pins, {"gate_id", "document_sha256"}, "trusted receipt")
+    gate = pins["gate_id"]
+    if not isinstance(gate, str) or not _GATE_ID_RE.fullmatch(gate):
+        raise JanusError("cannot verify export: trusted receipt requires a Janus gate ID")
+    digest = pins["document_sha256"]
+    _sha256_string(digest, "trusted receipt.document_sha256")
+    return gate, digest
+
+
 def verify_export_receipt(
     raw: bytes | str,
     *,

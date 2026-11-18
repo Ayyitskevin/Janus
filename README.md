@@ -76,9 +76,21 @@ and cross-language conformance vector are in [the export v1
 specification](docs/spec/export-v1.md). Verifying an export proves content
 identity only; it does not turn a ruling into permission to act.
 
-A conductor handing off one decision should send the expected gate ID and
-canonical document SHA-256 through a trusted channel independent of the file.
-The reviewer can then run this without the ledger or the bound artifact:
+A conductor handing off one decision can send its publication receipt through a
+trusted channel independent of the decision file. The reviewer can verify both
+the gate ID and the exact decision version offline with one command:
+
+```bash
+janus verify-export decision.json --trusted-receipt receipt.json
+```
+
+Use the receipt from the issuer's trusted channel. Anyone who can replace
+both files can supply a matching pair. When comparing multiple deliveries,
+keep the same copy of the receipt for each invocation. The decision can also
+come from stdin (`-`). Supply the receipt as a named regular file.
+
+If the handoff supplies the gate ID and canonical document SHA-256 separately,
+pass them directly:
 
 ```bash
 janus verify-export decision.json --expect-gate "$gate_id" \
@@ -112,7 +124,8 @@ On a match, `matched_bound_file_sha256` identifies the bytes measured when
 the human ruled. These can differ from the bytes present when the gate was
 raised. Check the receipt's state as well. A matching file can carry a
 `refused` ruling. A different file digest or a decision without a recorded
-file digest exits 2. Janus reads only the supplied export during verification.
+file digest exits 2. Either form accepts `--expect-bound-file-sha256`. Janus
+reads the supplied export and, when requested, the separate publication receipt.
 
 The diagnostic shape is also available where an agent most needs it: `raise`, `decide`,
 `withdraw`, `expire`, and `supersede` accept `--json` and print the gate as one object on
@@ -173,9 +186,10 @@ janus export --request-id gallery/contact-sheet-margin-1 --output decision.json 
 After publication succeeds, stdout contains a single JSON object with
 `gate_id` and `document_sha256`, followed by a newline. This also works with
 a positional gate ID. It requires one selected decision and a file destination.
-Pass those two values to the consumer through a separate trusted work packet.
-The consumer can then check the file with `verify-export`, even if another
-publisher has since replaced the delivery path.
+Send the receipt through a separate trusted work packet. The consumer can
+supply it to `verify-export --trusted-receipt` even if another publisher has
+since replaced the decision file. The receipt supplies both expectations,
+so use it on its own or pass the two explicit identity flags instead.
 
 A lookup or publication failure emits no receipt. If writing the receipt
 fails after the rename, Janus exits nonzero and reports that the file was
