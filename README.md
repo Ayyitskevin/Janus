@@ -29,6 +29,7 @@ janus show <id>            # detail, and whether the binding still holds
 janus check <id>           # preview one stored command, confirm, then observe
 janus stats                # the dated scorecard: is anyone actually using this
 janus export [<id>]        # stable, digest-verified evidence (never authority)
+janus verify-export FILE   # verify an export offline; use - to read from stdin
 janus revise-check <id> --kind delivery --command "..." --reason "..."
 janus context <id> --project janus --action-class merge --environment test \
   --fact tests_passed=yes --fact security_sensitive=no --evidence-ref ci:run-123
@@ -73,6 +74,25 @@ migration, runs no check, and does not inspect live bindings. The exact format
 and cross-language conformance vector are in [the export v1
 specification](docs/spec/export-v1.md). Verifying an export proves content
 identity only; it does not turn a ruling into permission to act.
+
+A conductor handing off one decision should send the expected gate ID and
+canonical document SHA-256 through a trusted channel independent of the file.
+The reviewer can then run this without the ledger or the bound artifact:
+
+```bash
+janus verify-export decision.json --expect-gate "$gate_id" \
+  --expect-document-sha256 "$document_sha256" --json
+```
+
+Use the export's `integrity.document_sha256` from the trusted source. Reformatting
+the JSON changes the file bytes but preserves that digest. With neither flag,
+success means the file passed its internal format and integrity checks. With
+both flags, the receipt identifies the exact decision and version the conductor
+sent. It includes the recorded state, consumer, selected option and
+binding-evidence status. A complete-ledger export gives a count and digest and
+cannot satisfy `--expect-gate`. A failed verification exits 2 with a diagnostic
+on stderr and no receipt. The reviewer still checks current proposal bytes,
+delivery evidence and their own authority before acting.
 
 The diagnostic shape is also available where an agent most needs it: `raise`, `decide`,
 `withdraw`, `expire`, and `supersede` accept `--json` and print the gate as one object on

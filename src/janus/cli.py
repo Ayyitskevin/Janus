@@ -271,6 +271,37 @@ def cmd_export(a, _conn=None) -> int:
     return 0
 
 
+def cmd_verify_export(a) -> int:
+    """Verify a transported artifact without opening a ledger."""
+    try:
+        raw = sys.stdin.buffer.read() if a.file == "-" else Path(a.file).read_bytes()
+        receipt = stable_export.verify_export_receipt(
+            raw, expect_gate=a.expect_gate, expect_document_sha256=a.expect_document_sha256,
+        )
+    except (JanusError, OSError) as exc:
+        # Diagnostics can quote a filename, record ID, or key from the input.
+        raise JanusError(ascii(str(exc))[1:-1]) from exc
+
+    if a.json:
+        print(json.dumps(receipt, separators=(",", ":")))
+        return 0
+
+    print(f"Verified selection: {receipt['gate_id'] or 'complete ledger'}")
+    print(f"Records: {receipt['record_count']}")
+    print(f"Document SHA-256: {receipt['document_sha256']}")
+    decision = receipt["decision"]
+    if decision is not None:
+        print(f"Question: {ascii(decision['question'])}")
+        print(f"State: {decision['state']}")
+        print(f"Consumer: {ascii(decision['consumer'])}")
+        option = decision["selected_option"]
+        if option is not None:
+            print(f"Selected option: {ascii(option['id'])} {ascii(option['label'])}")
+        if decision["binding_evidence"] is not None:
+            print(f"Binding evidence: {decision['binding_evidence']}")
+    return 0
+
+
 def _parse_facts(values: list[str] | None) -> dict[str, bool | None]:
     facts: dict[str, bool | None] = {}
     vocabulary = {"yes": True, "no": False, "unknown": None}
@@ -1179,6 +1210,14 @@ def build_parser() -> argparse.ArgumentParser:
     ex.add_argument("gate_id", nargs="?", help="one gate; omit for the complete ledger")
     ex.set_defaults(fn=cmd_export)
 
+    ve = sub.add_parser("verify-export", help="verify an exported decision offline")
+    ve.add_argument("file", metavar="FILE|-", help="export file, or - for standard input")
+    ve.add_argument("--expect-gate", metavar="ID", help="require this exact gate selection")
+    ve.add_argument("--expect-document-sha256", metavar="HEX",
+                    help="require this canonical document SHA-256 from a trusted handoff")
+    ve.add_argument("--json", action="store_true", help="emit the verified receipt as JSON")
+    ve.set_defaults(fn=cmd_verify_export)
+
     ctx = sub.add_parser(
         "context",
         help="append the facts a future policy may evaluate (never a decision)",
@@ -1301,7 +1340,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        if args.cmd == "export":
+        if args.cmd in ("export", "verify-export"):
             return args.fn(args)
         if args.cmd == "list" and args.unmeasured_delivery:
             return cmd_list_unmeasured_delivery(args)
