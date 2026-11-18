@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import statistics
 import subprocess
 import sys
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -271,34 +273,62 @@ def cmd_export(a, _conn=None) -> int:
     return 0
 
 
+def _human_export_receipt(receipt: dict) -> str:
+    lines = [
+        f"Verified selection: {receipt['gate_id'] or 'complete ledger'}",
+        f"Records: {receipt['record_count']}",
+        f"Document SHA-256: {receipt['document_sha256']}",
+    ]
+    decision = receipt["decision"]
+    if decision is not None:
+        lines.extend([
+            f"Question: {ascii(decision['question'])}",
+            f"State: {decision['state']}",
+            f"Consumer: {ascii(decision['consumer'])}",
+        ])
+        option = decision["selected_option"]
+        if option is not None:
+            lines.append(f"Selected option: {ascii(option['id'])} {ascii(option['label'])}")
+        if decision["binding_evidence"] is not None:
+            lines.append(f"Binding evidence: {decision['binding_evidence']}")
+    return "\n".join(lines)
+
+
 def cmd_verify_export(a) -> int:
     """Verify a transported artifact without opening a ledger."""
     try:
-        raw = sys.stdin.buffer.read() if a.file == "-" else Path(a.file).read_bytes()
+        if a.file == "-":
+            if sys.stdin is None:
+                raise JanusError("standard input is unavailable")
+            # A nonblocking read can return a valid JSON prefix before EOF.
+            if sys.stdin is sys.__stdin__ and not os.get_blocking(sys.stdin.fileno()):
+                raise JanusError("standard input must be a blocking stream")
+            raw = sys.stdin.buffer.read()
+            if raw is None:
+                raise JanusError("standard input would block")
+        else:
+            raw = Path(a.file).read_bytes()
         receipt = stable_export.verify_export_receipt(
             raw, expect_gate=a.expect_gate, expect_document_sha256=a.expect_document_sha256,
         )
-    except (JanusError, OSError) as exc:
+        if a.json:
+            text = json.dumps(receipt, separators=(",", ":"))
+        else:
+            text = _human_export_receipt(receipt)
+        if sys.stdout is None:
+            raise JanusError("standard output is unavailable")
+        try:
+            print(text, flush=True)
+        except OSError:
+            # Prevent interpreter shutdown from retrying a failed buffered write
+            # and replacing the verification command's exit status.
+            if sys.stdout is sys.__stdout__:
+                with suppress(OSError):
+                    sys.stdout.close()
+            raise
+    except (JanusError, OSError, ValueError) as exc:
         # Diagnostics can quote a filename, record ID, or key from the input.
         raise JanusError(ascii(str(exc))[1:-1]) from exc
-
-    if a.json:
-        print(json.dumps(receipt, separators=(",", ":")))
-        return 0
-
-    print(f"Verified selection: {receipt['gate_id'] or 'complete ledger'}")
-    print(f"Records: {receipt['record_count']}")
-    print(f"Document SHA-256: {receipt['document_sha256']}")
-    decision = receipt["decision"]
-    if decision is not None:
-        print(f"Question: {ascii(decision['question'])}")
-        print(f"State: {decision['state']}")
-        print(f"Consumer: {ascii(decision['consumer'])}")
-        option = decision["selected_option"]
-        if option is not None:
-            print(f"Selected option: {ascii(option['id'])} {ascii(option['label'])}")
-        if decision["binding_evidence"] is not None:
-            print(f"Binding evidence: {decision['binding_evidence']}")
     return 0
 
 

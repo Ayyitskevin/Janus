@@ -3,6 +3,7 @@
 import hashlib
 import io
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -194,3 +195,53 @@ def test_input_is_required_even_when_stdin_contains_an_export(capsys, monkeypatc
         cli.main(["verify-export", "--json"])
     reply = capsys.readouterr()
     assert raised.value.code == 2 and not reply.out and "required" in reply.err
+
+
+def _assert_stream_refusal(args, *, stdin=None, stdout=subprocess.PIPE, shell_setup=None,
+                           python_setup=None):
+    # Use the sources beside this test, including when run against an archived revision.
+    command = [sys.executable, "-E"]
+    if python_setup:
+        script = "from janus.cli import main\n" + python_setup + "\nraise SystemExit(main())"
+        command += ["-c", script]
+    else:
+        command += ["-m", "janus.cli"]
+    command += ["verify-export", *args, "--json"]
+    if shell_setup:
+        command = ["sh", "-c", shell_setup + '\nexec "$@"', "sh", *command]
+    result = subprocess.run(command, cwd=Path(__file__).resolve().parents[1] / "src",
+                            stdin=stdin, stdout=stdout, stderr=subprocess.PIPE, timeout=10)
+    assert result.returncode == 2, result.stderr
+    assert not result.stdout
+    assert result.stderr.startswith(b"janus: ") and len(result.stderr.splitlines()) == 1
+    assert result.stderr.removeprefix(b"janus: ").strip()
+
+
+@pytest.mark.parametrize("after_start", [False, True], ids=["missing-stream", "closed-descriptor"])
+def test_unavailable_stdin_is_an_input_error(after_start):
+    if after_start:
+        _assert_stream_refusal(["-"], python_setup="import os\nos.close(0)")
+    else:
+        _assert_stream_refusal(["-"], shell_setup="exec 0<&-")
+
+
+@pytest.mark.parametrize("has_export", [False, True], ids=["empty", "valid-prefix"])
+def test_would_block_stdin_is_an_input_error(has_export):
+    reader, writer = os.pipe()
+    with os.fdopen(reader, "rb") as pipe, os.fdopen(writer, "wb", buffering=0) as producer:
+        # The writer can still append more bytes after a valid-looking prefix.
+        if has_export:
+            raw = json.dumps(json.loads(GOLDEN.read_bytes()), separators=(",", ":")).encode()
+            assert producer.write(raw) == len(raw)
+        os.set_blocking(pipe.fileno(), False)
+        _assert_stream_refusal(["-"], stdin=pipe)
+
+
+def test_missing_stdout_is_an_output_error():
+    _assert_stream_refusal([str(GOLDEN)], shell_setup="exec 1>&-")
+
+
+@pytest.mark.skipif(not Path("/dev/full").exists(), reason="requires the ENOSPC test device")
+def test_unwritable_stdout_is_an_output_error():
+    with open("/dev/full", "wb", buffering=0) as full:
+        _assert_stream_refusal([str(GOLDEN)], stdout=full)
