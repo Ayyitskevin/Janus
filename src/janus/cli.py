@@ -268,7 +268,18 @@ def cmd_show(a, conn) -> int:
 
 def cmd_export(a, _conn=None) -> int:
     """Emit the stable interchange artifact without opening a writable ledger."""
-    sys.stdout.buffer.write(stable_export.export_gates(a.db, a.gate_id))
+    request_ids = a.request_ids or []
+    if len(request_ids) > 1:
+        raise JanusError("supply --request-id only once")
+    request_id = request_ids[0] if request_ids else None
+    try:
+        artifact = stable_export.export_gates(a.db, a.gate_id, request_id=request_id)
+    except JanusError as exc:
+        # A storage refusal can include an untrusted ledger path.
+        if str(exc).isprintable():
+            raise
+        raise JanusError(ascii(str(exc))[1:-1]) from exc
+    sys.stdout.buffer.write(artifact)
     sys.stdout.buffer.write(b"\n")
     return 0
 
@@ -1240,7 +1251,11 @@ def build_parser() -> argparse.ArgumentParser:
         "export",
         help="stable digest-verified JSON (read-only; evidence, never authority)",
     )
-    ex.add_argument("gate_id", nargs="?", help="one gate; omit for the complete ledger")
+    select = ex.add_mutually_exclusive_group()
+    select.add_argument("gate_id", nargs="?", help="one gate by generated ID")
+    select.add_argument("--request-id", metavar="ID", dest="request_ids", action="append",
+                        help="one gate by its saved raise request ID on this ledger")
+    ex.epilog = "Omit both selectors to export the complete ledger."
     ex.set_defaults(fn=cmd_export)
 
     ve = sub.add_parser("verify-export", help="verify an exported decision offline")

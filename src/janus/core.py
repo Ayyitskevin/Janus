@@ -909,6 +909,12 @@ def new_id() -> str:
     return "g" + uuid.uuid4().hex[:11]
 
 
+def validate_request_id(request_id: str) -> None:
+    if not isinstance(request_id, str) or not _REQUEST_ID_RE.fullmatch(request_id):
+        raise JanusError("request ID must be 1-128 ASCII letters, digits or ._:/-"
+                         " and start with a letter or digit")
+
+
 def _claim_raise_request(conn: sqlite3.Connection, request_id: str, gate_id: str) -> bool:
     # This one write statement serializes contenders before testing the key.
     # Finish it before reading changes(): PRAGMA count_changes can make an
@@ -957,11 +963,8 @@ def raise_gate(
     cites: str | None = None,
     request_id: str | None = None,
 ) -> str:
-    if request_id is not None and (
-        not isinstance(request_id, str) or not _REQUEST_ID_RE.fullmatch(request_id)
-    ):
-        raise JanusError("request ID must be 1-128 ASCII letters, digits or ._:/-"
-                         " and start with a letter or digit")
+    if request_id is not None:
+        validate_request_id(request_id)
     if kind not in KINDS:
         raise JanusError(
             f"kind must be one of {', '.join(KINDS)} — it answers WHY a human is "
